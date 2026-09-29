@@ -3,9 +3,6 @@ on:
   pull_request:
   push:
     branches: [feature/bootstrap-desktop-architecture]
-permissions:
-  contents: write
-
 jobs:
   check:
     runs-on: windows-latest
@@ -18,7 +15,7 @@ jobs:
         with:
           node-version: 22
       - uses: dtolnay/rust-toolchain@stable
-      - run: npm install
+      - run: npm ci
       - run: npm run build
       - shell: pwsh
         run: |
@@ -30,21 +27,4 @@ jobs:
           $ico = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
           $fs = [System.IO.File]::Create("src-tauri/icons/icon.ico")
           $ico.Save($fs); $fs.Close(); $g.Dispose(); $bmp.Dispose()
-      - run: cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features ${{ matrix.edition }}
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: generated-lockfiles-${{ matrix.edition }}
-          path: |
-            package-lock.json
-            src-tauri/Cargo.lock
-          if-no-files-found: warn
-      - shell: pwsh
-        if: matrix.edition == 'central'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package-lock.json src-tauri/Cargo.lock
-          if (git diff --cached --quiet) { exit 0 }
-          git commit -m "chore(DEP-01): commit generated dependency lockfiles"
-          git push origin HEAD:${{ github.head_ref || github.ref_name }}
+      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features ${{ matrix.edition }}
