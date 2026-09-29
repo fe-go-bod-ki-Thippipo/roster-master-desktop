@@ -16,10 +16,18 @@ jobs:
           node-version: 22
       - uses: dtolnay/rust-toolchain@stable
       - run: npm install
+      - run: npm run build
+      - run: cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features ${{ matrix.edition }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: generated-lockfiles-${{ matrix.edition }}
+          path: |
+            package-lock.json
+            src-tauri/Cargo.lock
+          if-no-files-found: warn
       - shell: pwsh
         run: |
           if (-not (Test-Path package-lock.json)) { throw "package-lock.json must be committed" }
           if (-not (Test-Path src-tauri/Cargo.lock)) { throw "src-tauri/Cargo.lock must be committed" }
           if (git status --porcelain -- package-lock.json src-tauri/Cargo.lock) { throw "Lockfiles changed during CI; regenerate and commit them" }
-      - run: npm run build
-      - run: cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features ${{ matrix.edition }}
