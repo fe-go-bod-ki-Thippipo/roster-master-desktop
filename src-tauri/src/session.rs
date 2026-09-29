@@ -11,3 +11,10 @@ impl SessionStore{
  pub fn resolve(&self,token:&str)->Result<String,String>{let mut map=self.0.lock().map_err(|_|"Session store unavailable")?;let s=map.get_mut(token).ok_or("Session ไม่ถูกต้องหรือหมดอายุ")?;if Utc::now()-s.last_seen>Duration::minutes(IDLE_MINUTES){map.remove(token);return Err("Session หมดอายุ กรุณาเข้าสู่ระบบใหม่".into())}s.last_seen=Utc::now();Ok(s.user_id.clone())}
  pub fn revoke(&self,token:&str)->Result<(),String>{self.0.lock().map_err(|_|"Session store unavailable")?.remove(token);Ok(())}
 }
+
+#[derive(Default)] pub struct LoginLimiter(pub Mutex<HashMap<String,Vec<DateTime<Utc>>>>);
+impl LoginLimiter{
+ pub fn check(&self,key:&str)->Result<(),String>{let mut m=self.0.lock().map_err(|_|"Login limiter unavailable")?;let now=Utc::now();let v=m.entry(key.to_lowercase()).or_default();v.retain(|t|now-*t<Duration::minutes(10));if v.len()>=5{return Err("เข้าสู่ระบบผิดหลายครั้ง กรุณารอแล้วลองใหม่".into())}Ok(())}
+ pub fn fail(&self,key:&str){if let Ok(mut m)=self.0.lock(){m.entry(key.to_lowercase()).or_default().push(Utc::now());}}
+ pub fn success(&self,key:&str){if let Ok(mut m)=self.0.lock(){m.remove(&key.to_lowercase());}}
+}
