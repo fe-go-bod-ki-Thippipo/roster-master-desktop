@@ -4,6 +4,7 @@ use tauri::{AppHandle, Manager};
 
 const SECURITY: &str = include_str!("../../database/migrations/0001_security.sql");
 const HR_DOMAIN: &str = include_str!("../../database/migrations/0002_hr_domain.sql");
+const OFFLINE_DISTRIBUTION: &str = include_str!("../../database/migrations/0003_offline_distribution.sql");
 
 pub fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -22,5 +23,6 @@ pub fn migrate(app: &AppHandle) -> Result<(), String> {
     let conn = open(app)?;
     conn.execute_batch(SECURITY).map_err(|e| e.to_string())?;
     conn.execute_batch(HR_DOMAIN).map_err(|e| e.to_string())?;
+    conn.execute_batch(OFFLINE_DISTRIBUTION).map_err(|e| e.to_string())?;
     Ok(())
 }
