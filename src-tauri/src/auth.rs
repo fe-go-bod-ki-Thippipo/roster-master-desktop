@@ -35,7 +35,10 @@ pub fn create_first_admin(app:&AppHandle,username:&str,password:&str,display_nam
 pub fn login(app:&AppHandle,store:&State<SessionStore>,limiter:&State<LoginLimiter>,username:&str,password:&str)->Result<Session,String>{
  limiter.check(username)?;
  let conn=db::open(app)?;
- let row=conn.query_row("SELECT id,username,password_hash,display_name FROM users WHERE username=?1 AND is_active=1",[username],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).map_err(|_|"ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง".to_string())?;
+ let row=match conn.query_row("SELECT id,username,password_hash,display_name FROM users WHERE username=?1 AND is_active=1",[username],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))){
+  Ok(row)=>row,
+  Err(_)=>{limiter.fail(username);return Err("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง".into())}
+ };
  let parsed=PasswordHash::new(&row.2).map_err(|_|"ข้อมูลรหัสผ่านไม่ถูกต้อง".to_string())?;
  if Argon2::default().verify_password(password.as_bytes(),&parsed).is_err(){limiter.fail(username);return Err("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง".into())} limiter.success(username);
  conn.execute("UPDATE users SET last_login_at=?1 WHERE id=?2",params![Utc::now().to_rfc3339(),row.0]).map_err(|e|e.to_string())?;
@@ -44,5 +47,13 @@ pub fn login(app:&AppHandle,store:&State<SessionStore>,limiter:&State<LoginLimit
  let token=store.issue(row.0)?; Ok(Session{token,username:row.1,display_name:row.3,permissions})
 }
 
-pub fn resolve_active(app:&AppHandle,store:&State<SessionStore>,token:&str)->Result<String,String>{let user_id=store.resolve(token)?;let c=db::open(app)?;let active:i64=c.query_row("SELECT is_active FROM users WHERE id=?1",[&user_id],|r|r.get(0)).map_err(|_|"ไม่พบบัญชีผู้ใช้")?;if active!=1{return Err("บัญชีถูกปิดใช้งาน".into())}Ok(user_id)}
+pub fn resolve_active(app:&AppHandle,store:&State<SessionStore>,token:&str)->Result<String,String>{
+ let user_id=store.resolve(token)?;let c=db::open(app)?;
+ let active=c.query_row("SELECT is_active FROM users WHERE id=?1",[&user_id],|r|r.get::<_,i64>(0));
+ match active{
+  Ok(1)=>Ok(user_id),
+  Ok(_)=>{let _=store.revoke(token);Err("บัญชีถูกปิดใช้งาน".into())},
+  Err(_)=>{let _=store.revoke(token);Err("ไม่พบบัญชีผู้ใช้".into())}
+ }
+}
 pub fn logout(store:&State<SessionStore>,token:&str)->Result<(),String>{store.revoke(token)}
