@@ -3,9 +3,9 @@ use rusqlite::params;
 use serde::{Deserialize,Serialize};
 use tauri::AppHandle;
 use uuid::Uuid;
-use crate::{db,edition};
+use crate::{db,edition,trust};
 use base64::{engine::general_purpose::STANDARD as B64,Engine};
-use ed25519_dalek::{Signature,Signer,SigningKey,Verifier,VerifyingKey};
+use ed25519_dalek::{Signer,SigningKey};
 use rand_core::OsRng;
 
 #[derive(Serialize,Deserialize)] pub struct SignedProvision {pub manifest:ProvisionManifest,pub key_id:String,pub public_key_b64:String,pub signature_b64:String}
@@ -37,10 +37,10 @@ pub fn export_provision(app:&AppHandle,user_id:&str,target_site_code:&str,target
 pub fn import_provision(app:&AppHandle,json:&str)->Result<(),String>{
  if edition::identity(app)?.is_some(){return Err("เครื่องนี้ถูก Provision แล้ว".into())}
  let signed:SignedProvision=serde_json::from_str(json).map_err(|_|"Package ไม่ถูกต้อง".to_string())?;
- let payload=serde_json::to_vec(&signed.manifest).map_err(|e|e.to_string())?;let pub_bytes=B64.decode(&signed.public_key_b64).map_err(|_|"Public key ไม่ถูกต้อง")?;let pub_arr:[u8;32]=pub_bytes.try_into().map_err(|_|"Public key length ไม่ถูกต้อง")?;let vk=VerifyingKey::from_bytes(&pub_arr).map_err(|_|"Public key ไม่ถูกต้อง")?;let sig_bytes=B64.decode(&signed.signature_b64).map_err(|_|"Signature ไม่ถูกต้อง")?;let sig=Signature::from_slice(&sig_bytes).map_err(|_|"Signature ไม่ถูกต้อง")?;vk.verify(&payload,&sig).map_err(|_|"Package ถูกแก้ไขหรือลายเซ็นไม่ถูกต้อง".to_string())?;
+ let payload=serde_json::to_vec(&signed.manifest).map_err(|e|e.to_string())?; let c=db::open(app)?; let trusted:String=c.query_row("SELECT public_key FROM trusted_package_keys WHERE key_id=?1 AND is_active=1",[&signed.key_id],|r|r.get(0)).map_err(|_|"Unit ยังไม่ได้ติดตั้ง Trust Anchor ของ Central".to_string())?; if trusted!=signed.public_key_b64{return Err("Public key ใน Package ไม่ตรงกับ Central ที่เชื่อถือ".into())} trust::verify(&trusted,&signed.signature_b64,&payload)?;
  let p=signed.manifest;
  if p.schema_version!=1||p.users.is_empty(){return Err("Package version หรือข้อมูลผู้ใช้ไม่ถูกต้อง".into())}
- let c=db::open(app)?; let tx=c.unchecked_transaction().map_err(|e|e.to_string())?; let now=Utc::now().to_rfc3339();
+ let tx=c.unchecked_transaction().map_err(|e|e.to_string())?; let now=Utc::now().to_rfc3339();
  tx.execute("INSERT INTO app_identity(singleton_id,edition,site_code,site_name,initialized_at) VALUES(1,'UNIT',?1,?2,?3)",params![p.target_site_code,p.target_site_name,now]).map_err(|e|e.to_string())?;
  for u in p.users{
   if u.role_code=="SYSTEM_ADMIN"{return Err("Unit Package ห้ามมี SYSTEM_ADMIN".into())}
