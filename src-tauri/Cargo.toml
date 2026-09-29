@@ -19,3 +19,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 argon2 = "0.5"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+base64 = "0.22"
+sha2 = "0.10"
