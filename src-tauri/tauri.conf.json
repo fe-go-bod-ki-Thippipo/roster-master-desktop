@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Roster Master Desktop",
+  "productName": "Roster Master Central",
   "version": "0.1.0",
-  "identifier": "com.ngantawee.rostermaster",
+  "identifier": "com.ngantawee.rostermaster.central",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -19,7 +19,15 @@
         "minHeight": 700
       }
     ],
-    "security": {"csp": null}
+    "security": {
+      "csp": null
+    }
   },
-  "bundle": {"active": true,"targets": "all"}
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.ico"
+    ]
+  }
 }
