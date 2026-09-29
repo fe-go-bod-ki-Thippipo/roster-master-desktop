@@ -33,3 +33,8 @@ pub fn dashboard_summary(app:AppHandle)->Result<DashboardSummary,String>{
 #[tauri::command] pub fn add_employee(app:AppHandle,user_id:String,input:crate::employees::EmployeeInput)->Result<(),String>{crate::employees::add(&app,&user_id,input)}
 #[tauri::command] pub fn list_assignments(app:AppHandle,user_id:String)->Result<Vec<crate::employees::Assignment>,String>{crate::employees::assignments(&app,&user_id)}
 #[tauri::command] pub fn add_assignment(app:AppHandle,user_id:String,employee_id:String,position_id:String,role_type:String,fte:Option<f64>,effective_from:Option<String>,effective_to:Option<String>)->Result<(),String>{crate::employees::add_assignment(&app,&user_id,&employee_id,&position_id,&role_type,fte,effective_from,effective_to)}
+
+#[tauri::command] pub fn list_managed_users(app:AppHandle,user_id:String)->Result<Vec<crate::admin::ManagedUser>,String>{crate::admin::list(&app,&user_id)}
+#[tauri::command] pub fn create_managed_user(app:AppHandle,user_id:String,input:crate::admin::CreateUserInput)->Result<(),String>{crate::admin::create(&app,&user_id,input)}
+#[tauri::command] pub fn export_provision_package(app:AppHandle,user_id:String,target_site_code:String,target_site_name:String,user_ids:Vec<String>)->Result<String,String>{crate::packages::export_provision(&app,&user_id,&target_site_code,&target_site_name,user_ids)}
+#[tauri::command] pub fn import_provision_package(app:AppHandle,package_json:String)->Result<(),String>{crate::packages::import_provision(&app,&package_json)}
