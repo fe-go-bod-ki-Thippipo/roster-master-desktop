@@ -7,6 +7,7 @@ mod employees;
 mod edition;
 mod org;
 mod packages;
+mod trust;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
