@@ -8,6 +8,11 @@ edition = "2021"
 name = "roster_master_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = ["central"]
+central = []
+unit = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
