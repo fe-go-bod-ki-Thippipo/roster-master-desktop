@@ -4,7 +4,11 @@ use serde::{Deserialize,Serialize};
 use tauri::AppHandle;
 use uuid::Uuid;
 use crate::{db,edition};
+use base64::{engine::general_purpose::STANDARD as B64,Engine};
+use ed25519_dalek::{Signature,Signer,SigningKey,Verifier,VerifyingKey};
+use rand_core::OsRng;
 
+#[derive(Serialize,Deserialize)] pub struct SignedProvision {pub manifest:ProvisionManifest,pub key_id:String,pub public_key_b64:String,pub signature_b64:String}
 #[derive(Serialize,Deserialize)]
 pub struct ProvisionManifest {pub package_id:String,pub schema_version:u32,pub source_site_code:String,pub target_site_code:String,pub target_site_name:String,pub issued_at:String,pub users:Vec<ProvisionUser>}
 #[derive(Serialize,Deserialize)]
@@ -22,12 +26,19 @@ pub fn export_provision(app:&AppHandle,user_id:&str,target_site_code:&str,target
   let permissions=ps.query_map([&role_code],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?.filter_map(Result::ok).collect();
   users.push(ProvisionUser{id,username,password_hash,display_name,role_code,permissions,scope_type,company_id,department_id});
  }
- serde_json::to_string_pretty(&ProvisionManifest{package_id:Uuid::new_v4().to_string(),schema_version:1,source_site_code:source,target_site_code:target_site_code.trim().into(),target_site_name:target_site_name.trim().into(),issued_at:Utc::now().to_rfc3339(),users}).map_err(|e|e.to_string())
+ { let manifest=ProvisionManifest{package_id:Uuid::new_v4().to_string(),schema_version:1,source_site_code:source,target_site_code:target_site_code.trim().into(),target_site_name:target_site_name.trim().into(),issued_at:Utc::now().to_rfc3339(),users};
+ let payload=serde_json::to_vec(&manifest).map_err(|e|e.to_string())?;
+ let key_row=c.query_row("SELECT key_id,private_key_b64,public_key_b64 FROM package_signing_keys WHERE is_active=1 ORDER BY created_at DESC LIMIT 1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)));
+ let (key_id,private_b64,public_b64)=match key_row{Ok(v)=>v,Err(_)=>{let sk=SigningKey::generate(&mut OsRng);let kid=Uuid::new_v4().to_string();let priv64=B64.encode(sk.to_bytes());let pub64=B64.encode(sk.verifying_key().to_bytes());c.execute("INSERT INTO package_signing_keys(id,key_id,private_key_b64,public_key_b64,is_active,created_at) VALUES(?1,?2,?3,?4,1,?5)",params![Uuid::new_v4().to_string(),kid,priv64,pub64,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;(kid,priv64,pub64)}};
+ let private_bytes=B64.decode(private_b64).map_err(|_|"Signing key ไม่ถูกต้อง")?;let arr:[u8;32]=private_bytes.try_into().map_err(|_|"Signing key length ไม่ถูกต้อง")?;let sk=SigningKey::from_bytes(&arr);let signature=sk.sign(&payload);
+ serde_json::to_string_pretty(&SignedProvision{manifest,key_id,public_key_b64:public_b64,signature_b64:B64.encode(signature.to_bytes())}).map_err(|e|e.to_string()) }
 }
 
 pub fn import_provision(app:&AppHandle,json:&str)->Result<(),String>{
  if edition::identity(app)?.is_some(){return Err("เครื่องนี้ถูก Provision แล้ว".into())}
- let p:ProvisionManifest=serde_json::from_str(json).map_err(|_|"Package ไม่ถูกต้อง".to_string())?;
+ let signed:SignedProvision=serde_json::from_str(json).map_err(|_|"Package ไม่ถูกต้อง".to_string())?;
+ let payload=serde_json::to_vec(&signed.manifest).map_err(|e|e.to_string())?;let pub_bytes=B64.decode(&signed.public_key_b64).map_err(|_|"Public key ไม่ถูกต้อง")?;let pub_arr:[u8;32]=pub_bytes.try_into().map_err(|_|"Public key length ไม่ถูกต้อง")?;let vk=VerifyingKey::from_bytes(&pub_arr).map_err(|_|"Public key ไม่ถูกต้อง")?;let sig_bytes=B64.decode(&signed.signature_b64).map_err(|_|"Signature ไม่ถูกต้อง")?;let sig=Signature::from_slice(&sig_bytes).map_err(|_|"Signature ไม่ถูกต้อง")?;vk.verify(&payload,&sig).map_err(|_|"Package ถูกแก้ไขหรือลายเซ็นไม่ถูกต้อง".to_string())?;
+ let p=signed.manifest;
  if p.schema_version!=1||p.users.is_empty(){return Err("Package version หรือข้อมูลผู้ใช้ไม่ถูกต้อง".into())}
  let c=db::open(app)?; let tx=c.unchecked_transaction().map_err(|e|e.to_string())?; let now=Utc::now().to_rfc3339();
  tx.execute("INSERT INTO app_identity(singleton_id,edition,site_code,site_name,initialized_at) VALUES(1,'UNIT',?1,?2,?3)",params![p.target_site_code,p.target_site_name,now]).map_err(|e|e.to_string())?;
