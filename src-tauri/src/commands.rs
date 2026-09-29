@@ -6,8 +6,10 @@ use crate::{auth,db,edition,session::{LoginLimiter,SessionStore}};
 pub struct DashboardSummary { pub employees:i64, pub target_hc:f64, pub fte:f64, pub vacancies:f64 }
 
 #[tauri::command] pub fn app_identity(app:AppHandle)->Result<Option<edition::AppIdentity>,String>{edition::identity(&app)}
+#[cfg(feature="central")]
 #[tauri::command] pub fn initialize_central(app:AppHandle,site_code:String,site_name:String)->Result<(),String>{edition::initialize_central(&app,&site_code,&site_name)}
 #[tauri::command] pub fn needs_setup(app:AppHandle)->Result<bool,String>{auth::needs_setup(&app)}
+#[cfg(feature="central")]
 #[tauri::command] pub fn create_first_admin(app:AppHandle,username:String,password:String,display_name:String)->Result<(),String>{auth::create_first_admin(&app,&username,&password,&display_name)}
 #[tauri::command] pub fn login(app:AppHandle,store:State<SessionStore>,limiter:State<LoginLimiter>,username:String,password:String)->Result<auth::Session,String>{auth::login(&app,&store,&limiter,&username,&password)}
 #[tauri::command] pub fn logout(store:State<SessionStore>,token:String)->Result<(),String>{auth::logout(&store,&token)}
@@ -37,7 +39,11 @@ pub fn dashboard_summary(app:AppHandle,store:State<SessionStore>,token:String)->
 #[tauri::command] pub fn list_assignments(app:AppHandle,store:State<SessionStore>,token:String)->Result<Vec<crate::employees::Assignment>,String>{let user_id=auth::resolve_active(&app,&store,&token)?;crate::employees::assignments(&app,&user_id)}
 #[tauri::command] pub fn add_assignment(app:AppHandle,store:State<SessionStore>,token:String,employee_id:String,position_id:String,role_type:String,fte:Option<f64>,effective_from:Option<String>,effective_to:Option<String>)->Result<(),String>{let user_id=auth::resolve_active(&app,&store,&token)?;crate::employees::add_assignment(&app,&user_id,&employee_id,&position_id,&role_type,fte,effective_from,effective_to)}
 
+#[cfg(feature="central")]
 #[tauri::command] pub fn list_managed_users(app:AppHandle,store:State<SessionStore>,token:String)->Result<Vec<crate::admin::ManagedUser>,String>{let user_id=auth::resolve_active(&app,&store,&token)?;crate::admin::list(&app,&user_id)}
+#[cfg(feature="central")]
 #[tauri::command] pub fn create_managed_user(app:AppHandle,store:State<SessionStore>,token:String,input:crate::admin::CreateUserInput)->Result<(),String>{let user_id=auth::resolve_active(&app,&store,&token)?;crate::admin::create(&app,&user_id,input)}
+#[cfg(feature="central")]
 #[tauri::command] pub fn export_provision_package(app:AppHandle,store:State<SessionStore>,token:String,target_site_code:String,target_site_name:String,user_ids:Vec<String>)->Result<String,String>{let user_id=auth::resolve_active(&app,&store,&token)?;crate::packages::export_provision(&app,&user_id,&target_site_code,&target_site_name,user_ids)}
+#[cfg(feature="unit")]
 #[tauri::command] pub fn import_provision_package(app:AppHandle,package_json:String)->Result<(),String>{crate::packages::import_provision(&app,&package_json)}
