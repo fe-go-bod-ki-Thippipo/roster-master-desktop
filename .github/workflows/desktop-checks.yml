@@ -17,6 +17,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: npm install
       - run: npm run build
+      - shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force src-tauri/icons | Out-Null
+          Add-Type -AssemblyName System.Drawing
+          $bmp = New-Object System.Drawing.Bitmap 32,32
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.Clear([System.Drawing.Color]::FromArgb(35,78,112))
+          $ico = [System.Drawing.Icon]::FromHandle($bmp.GetHicon())
+          $fs = [System.IO.File]::Create("src-tauri/icons/icon.ico")
+          $ico.Save($fs); $fs.Close(); $g.Dispose(); $bmp.Dispose()
       - run: cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features ${{ matrix.edition }}
       - uses: actions/upload-artifact@v4
         if: always()
