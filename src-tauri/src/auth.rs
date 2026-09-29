@@ -16,6 +16,7 @@ pub fn needs_setup(app:&AppHandle)->Result<bool,String>{
  Ok(count==0)
 }
 pub fn create_first_admin(app:&AppHandle,username:&str,password:&str,display_name:&str)->Result<(),String>{
+ if !crate::edition::is_central(app)? {return Err("สร้าง System Admin ได้เฉพาะ Central Edition".into())}
  if username.trim().len()<3 || password.len()<10 || display_name.trim().is_empty(){return Err("กรุณากำหนดชื่อผู้ใช้ ชื่อแสดง และรหัสผ่านอย่างน้อย 10 ตัวอักษร".into())}
  if !needs_setup(app)? {return Err("ระบบมีผู้ใช้งานแล้ว".into())}
  let conn=db::open(app)?;
