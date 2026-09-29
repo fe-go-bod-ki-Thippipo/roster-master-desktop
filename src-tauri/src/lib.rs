@@ -1,6 +1,7 @@
 mod admin;
 mod audit;
 mod auth;
+mod authz;
 mod commands;
 mod db;
 mod employees;
