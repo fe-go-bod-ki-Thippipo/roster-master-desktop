@@ -15,10 +15,11 @@ pub struct DashboardSummary { pub employees:i64, pub target_hc:f64, pub fte:f64,
 #[tauri::command]
 pub fn dashboard_summary(app:AppHandle,store:State<SessionStore>,token:String)->Result<DashboardSummary,String>{
  let user_id=auth::resolve_active(&app,&store,&token)?; let pc=db::open(&app)?; let allowed:i64=pc.query_row("SELECT EXISTS(SELECT 1 FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=?1 AND p.code='dashboard.view')",[&user_id],|r|r.get(0)).map_err(|e|e.to_string())?; if allowed!=1{return Err("ไม่มีสิทธิ์ดู Dashboard".into())}
- let conn=db::open(&app)?;
- let employees=conn.query_row("SELECT COUNT(*) FROM employees WHERE status='ACTIVE'",[],|r|r.get(0)).map_err(|e|e.to_string())?;
- let target_hc:f64=conn.query_row("SELECT COALESCE(SUM(target_hc),0) FROM positions WHERE is_active=1",[],|r|r.get(0)).map_err(|e|e.to_string())?;
- let fte:f64=conn.query_row("SELECT COALESCE(SUM(COALESCE(a.fte,1.0/(SELECT COUNT(*) FROM assignments x WHERE x.employee_id=a.employee_id AND x.is_cancelled=0 AND (x.effective_from IS NULL OR x.effective_from<=date('now')) AND (x.effective_to IS NULL OR x.effective_to>=date('now'))))),0) FROM assignments a WHERE a.is_cancelled=0 AND (a.effective_from IS NULL OR a.effective_from<=date('now')) AND (a.effective_to IS NULL OR a.effective_to>=date('now'))",[],|r|r.get(0)).map_err(|e|e.to_string())?;
+ let employees=crate::employees::list(&app,&user_id)?.into_iter().filter(|e|e.status=="ACTIVE").count() as i64;
+ let positions=crate::org::positions(&app,&user_id)?; let target_hc:f64=positions.iter().map(|p|p.target_hc).sum();
+ let visible_positions:std::collections::HashSet<String>=positions.into_iter().map(|p|p.id).collect();
+ let assignments=crate::employees::assignments(&app,&user_id)?; let active:Vec<_>=assignments.into_iter().filter(|a|visible_positions.contains(&a.position_id)&&a.effective_from.as_deref().map(|d|d<=chrono::Local::now().date_naive().format("%Y-%m-%d").to_string().as_str()).unwrap_or(true)&&a.effective_to.as_deref().map(|d|d>=chrono::Local::now().date_naive().format("%Y-%m-%d").to_string().as_str()).unwrap_or(true)).collect();
+ let fte:f64=active.iter().map(|a|a.fte.unwrap_or(0.0)).sum();
  Ok(DashboardSummary{employees,target_hc,fte,vacancies:(target_hc-fte).max(0.0)})
 }
 
