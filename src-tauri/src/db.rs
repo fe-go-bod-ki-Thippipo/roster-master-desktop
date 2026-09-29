@@ -6,6 +6,7 @@ const SECURITY: &str = include_str!("../../database/migrations/0001_security.sql
 const HR_DOMAIN: &str = include_str!("../../database/migrations/0002_hr_domain.sql");
 const OFFLINE_DISTRIBUTION: &str = include_str!("../../database/migrations/0003_offline_distribution.sql");
 const PACKAGE_SIGNING: &str = include_str!("../../database/migrations/0004_package_signing.sql");
+const SCOPE_CONSTRAINTS: &str = include_str!("../../database/migrations/0005_scope_constraints.sql");
 
 pub fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -26,5 +27,6 @@ pub fn migrate(app: &AppHandle) -> Result<(), String> {
     conn.execute_batch(HR_DOMAIN).map_err(|e| e.to_string())?;
     conn.execute_batch(OFFLINE_DISTRIBUTION).map_err(|e| e.to_string())?;
     conn.execute_batch(PACKAGE_SIGNING).map_err(|e| e.to_string())?;
+    conn.execute_batch(SCOPE_CONSTRAINTS).map_err(|e| e.to_string())?;
     Ok(())
 }
