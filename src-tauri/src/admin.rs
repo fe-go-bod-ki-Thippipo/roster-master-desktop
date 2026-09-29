@@ -18,7 +18,7 @@ fn require_admin(app:&AppHandle,user:&str)->Result<(),String>{
 pub fn list(app:&AppHandle,user:&str)->Result<Vec<ManagedUser>,String>{
  require_admin(app,user)?; let c=db::open(app)?;
  let mut s=c.prepare("SELECT u.id,u.username,u.display_name,u.is_active,r.code,COALESCE(ds.scope_type,'GLOBAL'),ds.company_id,ds.department_id FROM users u JOIN user_roles ur ON ur.user_id=u.id JOIN roles r ON r.id=ur.role_id LEFT JOIN user_data_scopes ds ON ds.user_id=u.id ORDER BY u.username").map_err(|e|e.to_string())?;
- Ok(s.query_map([],|r|Ok(ManagedUser{id:r.get(0)?,username:r.get(1)?,display_name:r.get(2)?,is_active:r.get::<_,i64>(3)?==1,role_code:r.get(4)?,scope_type:r.get(5)?,company_id:r.get(6)?,department_id:r.get(7)?})).map_err(|e|e.to_string())?.filter_map(Result::ok).collect())
+ let rows=s.query_map([],|r|Ok(ManagedUser{id:r.get(0)?,username:r.get(1)?,display_name:r.get(2)?,is_active:r.get::<_,i64>(3)?==1,role_code:r.get(4)?,scope_type:r.get(5)?,company_id:r.get(6)?,department_id:r.get(7)?})).map_err(|e|e.to_string())?; let v=rows.filter_map(Result::ok).collect(); Ok(v)
 }
 pub fn create(app:&AppHandle,user:&str,x:CreateUserInput)->Result<(),String>{
  require_admin(app,user)?;
