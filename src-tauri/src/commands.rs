@@ -26,3 +26,8 @@ pub fn dashboard_summary(app:AppHandle)->Result<DashboardSummary,String>{
 #[tauri::command] pub fn add_company(app:AppHandle,user_id:String,code:String,name:String,company_group_id:Option<String>)->Result<(),String>{crate::org::add_company(&app,&user_id,&code,&name,company_group_id)}
 #[tauri::command] pub fn add_org_unit(app:AppHandle,user_id:String,code:String,name:String,company_id:String,parent_id:Option<String>,unit_type:String)->Result<(),String>{crate::org::add_unit(&app,&user_id,&code,&name,&company_id,parent_id,&unit_type)}
 #[tauri::command] pub fn add_position(app:AppHandle,user_id:String,code:String,name:String,org_unit_id:String,grade:Option<i64>,target_hc:f64)->Result<(),String>{crate::org::add_position(&app,&user_id,&code,&name,&org_unit_id,grade,target_hc)}
+
+#[tauri::command] pub fn list_employees(app:AppHandle,user_id:String)->Result<Vec<crate::employees::Employee>,String>{crate::employees::list(&app,&user_id)}
+#[tauri::command] pub fn add_employee(app:AppHandle,user_id:String,input:crate::employees::EmployeeInput)->Result<(),String>{crate::employees::add(&app,&user_id,input)}
+#[tauri::command] pub fn list_assignments(app:AppHandle,user_id:String)->Result<Vec<crate::employees::Assignment>,String>{crate::employees::assignments(&app,&user_id)}
+#[tauri::command] pub fn add_assignment(app:AppHandle,user_id:String,employee_id:String,position_id:String,role_type:String,fte:Option<f64>,effective_from:Option<String>)->Result<(),String>{crate::employees::add_assignment(&app,&user_id,&employee_id,&position_id,&role_type,fte,effective_from)}
