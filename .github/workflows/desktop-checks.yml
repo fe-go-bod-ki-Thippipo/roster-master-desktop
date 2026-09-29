@@ -16,5 +16,7 @@ jobs:
           node-version: 22
       - uses: dtolnay/rust-toolchain@stable
       - run: npm install
+      - run: git diff --exit-code -- package-lock.json
+      - run: git diff --exit-code -- src-tauri/Cargo.lock
       - run: npm run build
       - run: cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features ${{ matrix.edition }}
