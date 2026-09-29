@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 type Page="dashboard"|"organization"|"departments"|"positions"|"employees"|"settings";
 type Session={user_id:string;username:string;display_name:string;permissions:string[]};
 type Summary={employees:number;target_hc:number;fte:number;vacancies:number};
+type AppIdentity={edition:"CENTRAL"|"UNIT";site_code?:string;site_name?:string};
 const menu:{id:Page;label:string;permission:string}[]=[
  {id:"dashboard",label:"Dashboard",permission:"dashboard.view"},{id:"organization",label:"Organization Chart",permission:"department.view"},
  {id:"departments",label:"หน่วยงาน",permission:"department.view"},{id:"positions",label:"ตำแหน่ง",permission:"position.view"},
@@ -11,19 +12,19 @@ const menu:{id:Page;label:string;permission:string}[]=[
 ];
 
 export function App(){
- const [setup,setSetup]=useState<boolean|null>(null),[session,setSession]=useState<Session|null>(null),[page,setPage]=useState<Page>("dashboard"),[error,setError]=useState("");
- useEffect(()=>{invoke<boolean>("needs_setup").then(setSetup).catch(e=>setError(String(e)))},[]);
+ const [setup,setSetup]=useState<boolean|null>(null),[identity,setIdentity]=useState<AppIdentity|null|undefined>(undefined),[session,setSession]=useState<Session|null>(null),[page,setPage]=useState<Page>("dashboard"),[error,setError]=useState("");
+ useEffect(()=>{Promise.all([invoke<boolean>("needs_setup"),invoke<AppIdentity|null>("app_identity")]).then(([s,i])=>{setSetup(s);setIdentity(i)}).catch(e=>setError(String(e)))},[]);
  async function submit(e:FormEvent<HTMLFormElement>){
   e.preventDefault();setError("");const f=new FormData(e.currentTarget),username=String(f.get("username")||""),password=String(f.get("password")||"");
   try{
-   if(setup){await invoke("create_first_admin",{username,password,displayName:String(f.get("displayName")||"")});setSetup(false)}
+   if(setup){if(!identity){await invoke("initialize_central",{siteCode:String(f.get("siteCode")||"CENTRAL"),siteName:String(f.get("siteName")||"ส่วนกลาง")});setIdentity({edition:"CENTRAL",site_code:String(f.get("siteCode")||"CENTRAL"),site_name:String(f.get("siteName")||"ส่วนกลาง")})}await invoke("create_first_admin",{username,password,displayName:String(f.get("displayName")||"")});setSetup(false)}
    else setSession(await invoke<Session>("login",{username,password}));
   }catch(e){setError(String(e))}
  }
  if(setup===null)return <main className="login-shell"><section className="login-card"><h1>Roster Master Desktop</h1><p>กำลังเปิดฐานข้อมูลในเครื่อง…</p>{error&&<div className="error">{error}</div>}</section></main>;
- if(!session)return <main className="login-shell"><form className="login-card" onSubmit={submit}><div className="brand-mark">RM</div><h1>{setup?"ตั้งค่าระบบครั้งแรก":"Roster Master Desktop"}</h1><p>{setup?"สร้างบัญชี System Admin สำหรับเครื่องนี้":"ระบบบริหารอัตรากำลัง • Offline-first"}</p>{setup&&<label>ชื่อผู้ดูแลระบบ<input name="displayName" required/></label>}<label>ชื่อผู้ใช้<input name="username" required autoFocus/></label><label>รหัสผ่าน<input name="password" type="password" minLength={setup?10:1} required/></label>{error&&<div className="error">{error}</div>}<button>{setup?"สร้างผู้ดูแลระบบ":"เข้าสู่ระบบ"}</button><small>{setup?"รหัสผ่านอย่างน้อย 10 ตัวอักษร":"ตรวจสอบบัญชีจาก SQLite ในเครื่อง"}</small></form></main>;
+ if(!session)return <main className="login-shell"><form className="login-card" onSubmit={submit}><div className="brand-mark">RM</div><h1>{setup?"ตั้งค่าระบบครั้งแรก":"Roster Master Desktop"}</h1><p>{setup?"สร้างบัญชี System Admin สำหรับเครื่องนี้":"ระบบบริหารอัตรากำลัง • Offline-first"}</p>{setup&&!identity&&<><label>รหัส Site<input name="siteCode" defaultValue="CENTRAL" required/></label><label>ชื่อ Site<input name="siteName" defaultValue="ส่วนกลาง" required/></label></>}{setup&&<label>ชื่อผู้ดูแลระบบ<input name="displayName" required/></label>}<label>ชื่อผู้ใช้<input name="username" required autoFocus/></label><label>รหัสผ่าน<input name="password" type="password" minLength={setup?10:1} required/></label>{error&&<div className="error">{error}</div>}<button>{setup?"สร้างผู้ดูแลระบบ":"เข้าสู่ระบบ"}</button><small>{setup?"รหัสผ่านอย่างน้อย 10 ตัวอักษร":"ตรวจสอบบัญชีจาก SQLite ในเครื่อง"}</small></form></main>;
  const allowed=menu.filter(m=>session.permissions.includes(m.permission));
- return <div className="app-shell"><aside><div className="app-brand"><b>Roster Master</b><span>Desktop v0.1</span></div><nav>{allowed.map(m=><button key={m.id} className={page===m.id?"active":""} onClick={()=>setPage(m.id)}>{m.label}</button>)}</nav><div className="user-box"><b>{session.display_name}</b><span>{session.username}</span><button onClick={()=>setSession(null)}>ออกจากระบบ</button></div></aside><main className="content"><header><div><h1>{menu.find(x=>x.id===page)?.label}</h1><p>Desktop จาก Roster Master v5.55</p></div><div className="offline">● Local SQLite</div></header>{page==="dashboard"?<Dashboard/>:page==="departments"?<Departments session={session}/>:page==="positions"?<Positions session={session}/>:page==="employees"?<Employees session={session}/>:<Placeholder title={menu.find(x=>x.id===page)?.label||""}/>}</main></div>
+ return <div className="app-shell"><aside><div className="app-brand"><b>Roster Master</b><span>Desktop v0.1 · {identity?.edition||"-"}</span></div><nav>{allowed.map(m=><button key={m.id} className={page===m.id?"active":""} onClick={()=>setPage(m.id)}>{m.label}</button>)}</nav><div className="user-box"><b>{session.display_name}</b><span>{session.username}</span><button onClick={()=>setSession(null)}>ออกจากระบบ</button></div></aside><main className="content"><header><div><h1>{menu.find(x=>x.id===page)?.label}</h1><p>Desktop จาก Roster Master v5.55</p></div><div className="offline">● Local SQLite</div></header>{page==="dashboard"?<Dashboard/>:page==="departments"?<Departments session={session}/>:page==="positions"?<Positions session={session}/>:page==="employees"?<Employees session={session}/>:<Placeholder title={menu.find(x=>x.id===page)?.label||""}/>}</main></div>
 }
 function Dashboard(){
  const [s,setS]=useState<Summary|null>(null),[error,setError]=useState("");
