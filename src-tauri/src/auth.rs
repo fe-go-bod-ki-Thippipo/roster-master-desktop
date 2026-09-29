@@ -5,7 +5,7 @@ use rusqlite::params;
 use serde::Serialize;
 use tauri::{AppHandle,State};
 use uuid::Uuid;
-use crate::{db,session::SessionStore};
+use crate::{db,session::{LoginLimiter,SessionStore}};
 
 #[derive(Serialize)]
 pub struct Session { pub token:String, pub username:String, pub display_name:String, pub permissions:Vec<String> }
@@ -32,11 +32,12 @@ pub fn create_first_admin(app:&AppHandle,username:&str,password:&str,display_nam
  tx.execute("INSERT INTO user_data_scopes(id,user_id,scope_type) VALUES(?1,?2,'GLOBAL')",params![Uuid::new_v4().to_string(),user_id]).map_err(|e|e.to_string())?;
  tx.commit().map_err(|e|e.to_string())
 }
-pub fn login(app:&AppHandle,store:&State<SessionStore>,username:&str,password:&str)->Result<Session,String>{
+pub fn login(app:&AppHandle,store:&State<SessionStore>,limiter:&State<LoginLimiter>,username:&str,password:&str)->Result<Session,String>{
+ limiter.check(username)?;
  let conn=db::open(app)?;
  let row=conn.query_row("SELECT id,username,password_hash,display_name FROM users WHERE username=?1 AND is_active=1",[username],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).map_err(|_|"ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง".to_string())?;
  let parsed=PasswordHash::new(&row.2).map_err(|_|"ข้อมูลรหัสผ่านไม่ถูกต้อง".to_string())?;
- Argon2::default().verify_password(password.as_bytes(),&parsed).map_err(|_|"ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง".to_string())?;
+ if Argon2::default().verify_password(password.as_bytes(),&parsed).is_err(){limiter.fail(username);return Err("ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง".into())} limiter.success(username);
  conn.execute("UPDATE users SET last_login_at=?1 WHERE id=?2",params![Utc::now().to_rfc3339(),row.0]).map_err(|e|e.to_string())?;
  let mut stmt=conn.prepare("SELECT DISTINCT p.code FROM permissions p JOIN role_permissions rp ON rp.permission_id=p.id JOIN user_roles ur ON ur.role_id=rp.role_id WHERE ur.user_id=?1 ORDER BY p.code").map_err(|e|e.to_string())?;
  let permissions=stmt.query_map([&row.0],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?.filter_map(Result::ok).collect();
