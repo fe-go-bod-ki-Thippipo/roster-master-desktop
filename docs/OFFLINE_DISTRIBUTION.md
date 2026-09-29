@@ -22,3 +22,9 @@ A package must contain a manifest with package ID, schema version, source site, 
 
 ## Bootstrap rule
 An empty database is not automatically an administrator. Central initialization must happen before first-admin creation. Unit provisioning is a separate import flow and never calls create_first_admin.
+
+
+## Trust-anchor bootstrap
+A Unit must never trust a public key merely because it appears inside the package being imported. Before provisioning, the Unit installation must already contain the approved Central key ID and public verification key. Production Unit builds will inject this trust anchor at build/provisioning time. Package import succeeds only when both key ID and public key match that pretrusted record and the Ed25519 signature verifies.
+
+For development builds, a separate explicit trust-bootstrap step may be used. It must not be available as a normal Unit user setting after provisioning.
