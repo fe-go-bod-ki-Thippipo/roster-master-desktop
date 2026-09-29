@@ -1,10 +1,12 @@
 use serde::Serialize;
 use tauri::AppHandle;
-use crate::{auth,db};
+use crate::{auth,db,edition};
 
 #[derive(Serialize)]
 pub struct DashboardSummary { pub employees:i64, pub target_hc:f64, pub fte:f64, pub vacancies:f64 }
 
+#[tauri::command] pub fn app_identity(app:AppHandle)->Result<Option<edition::AppIdentity>,String>{edition::identity(&app)}
+#[tauri::command] pub fn initialize_central(app:AppHandle,site_code:String,site_name:String)->Result<(),String>{edition::initialize_central(&app,&site_code,&site_name)}
 #[tauri::command] pub fn needs_setup(app:AppHandle)->Result<bool,String>{auth::needs_setup(&app)}
 #[tauri::command] pub fn create_first_admin(app:AppHandle,username:String,password:String,display_name:String)->Result<(),String>{auth::create_first_admin(&app,&username,&password,&display_name)}
 #[tauri::command] pub fn login(app:AppHandle,username:String,password:String)->Result<auth::Session,String>{auth::login(&app,&username,&password)}
