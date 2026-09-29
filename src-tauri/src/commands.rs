@@ -1,6 +1,6 @@
 use serde::Serialize;
 use tauri::{AppHandle,State};
-use crate::{auth,db,edition,session::SessionStore};
+use crate::{auth,db,edition,session::{LoginLimiter,SessionStore}};
 
 #[derive(Serialize)]
 pub struct DashboardSummary { pub employees:i64, pub target_hc:f64, pub fte:f64, pub vacancies:f64 }
@@ -9,7 +9,7 @@ pub struct DashboardSummary { pub employees:i64, pub target_hc:f64, pub fte:f64,
 #[tauri::command] pub fn initialize_central(app:AppHandle,site_code:String,site_name:String)->Result<(),String>{edition::initialize_central(&app,&site_code,&site_name)}
 #[tauri::command] pub fn needs_setup(app:AppHandle)->Result<bool,String>{auth::needs_setup(&app)}
 #[tauri::command] pub fn create_first_admin(app:AppHandle,username:String,password:String,display_name:String)->Result<(),String>{auth::create_first_admin(&app,&username,&password,&display_name)}
-#[tauri::command] pub fn login(app:AppHandle,store:State<SessionStore>,username:String,password:String)->Result<auth::Session,String>{auth::login(&app,&store,&username,&password)}
+#[tauri::command] pub fn login(app:AppHandle,store:State<SessionStore>,limiter:State<LoginLimiter>,username:String,password:String)->Result<auth::Session,String>{auth::login(&app,&store,&limiter,&username,&password)}
 #[tauri::command] pub fn logout(store:State<SessionStore>,token:String)->Result<(),String>{auth::logout(&store,&token)}
 
 #[tauri::command]
