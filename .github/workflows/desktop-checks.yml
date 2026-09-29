@@ -16,7 +16,10 @@ jobs:
           node-version: 22
       - uses: dtolnay/rust-toolchain@stable
       - run: npm install
-      - run: git diff --exit-code -- package-lock.json
-      - run: git diff --exit-code -- src-tauri/Cargo.lock
+      - shell: pwsh
+        run: |
+          if (-not (Test-Path package-lock.json)) { throw "package-lock.json must be committed" }
+          if (-not (Test-Path src-tauri/Cargo.lock)) { throw "src-tauri/Cargo.lock must be committed" }
+          if (git status --porcelain -- package-lock.json src-tauri/Cargo.lock) { throw "Lockfiles changed during CI; regenerate and commit them" }
       - run: npm run build
       - run: cargo check --manifest-path src-tauri/Cargo.toml --no-default-features --features ${{ matrix.edition }}
