@@ -19,3 +19,9 @@ pub fn can_employee(conn:&Connection,ctx:&AuthContext,employee_id:&str)->Result<
  let rows=s.query_map(params![employee_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(|e|e.to_string())?;
  for row in rows.filter_map(Result::ok){if can_company(ctx,&row.0)||ctx.departments.iter().any(|d|d==&row.1){return Ok(true)}} Ok(false)
 }
+
+pub fn is_home_company_visible(conn:&Connection,ctx:&AuthContext,employee_id:&str)->Result<bool,String>{
+ if ctx.global{return Ok(true)}
+ let home:Option<String>=conn.query_row("SELECT home_company_id FROM employees WHERE id=?1",[employee_id],|r|r.get(0)).map_err(|_|"ไม่พบพนักงาน")?;
+ Ok(home.as_deref().is_some_and(|x|can_company(ctx,x)))
+}
