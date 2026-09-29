@@ -3,12 +3,12 @@ use argon2::password_hash::{rand_core::OsRng, SaltString};
 use chrono::Utc;
 use rusqlite::params;
 use serde::Serialize;
-use tauri::AppHandle;
+use tauri::{AppHandle,State};
 use uuid::Uuid;
-use crate::db;
+use crate::{db,session::SessionStore};
 
 #[derive(Serialize)]
-pub struct Session { pub user_id:String, pub username:String, pub display_name:String, pub permissions:Vec<String> }
+pub struct Session { pub token:String, pub username:String, pub display_name:String, pub permissions:Vec<String> }
 
 pub fn needs_setup(app:&AppHandle)->Result<bool,String>{
  let conn=db::open(app)?;
@@ -32,7 +32,7 @@ pub fn create_first_admin(app:&AppHandle,username:&str,password:&str,display_nam
  tx.execute("INSERT INTO user_data_scopes(id,user_id,scope_type) VALUES(?1,?2,'GLOBAL')",params![Uuid::new_v4().to_string(),user_id]).map_err(|e|e.to_string())?;
  tx.commit().map_err(|e|e.to_string())
 }
-pub fn login(app:&AppHandle,username:&str,password:&str)->Result<Session,String>{
+pub fn login(app:&AppHandle,store:&State<SessionStore>,username:&str,password:&str)->Result<Session,String>{
  let conn=db::open(app)?;
  let row=conn.query_row("SELECT id,username,password_hash,display_name FROM users WHERE username=?1 AND is_active=1",[username],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?))).map_err(|_|"ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง".to_string())?;
  let parsed=PasswordHash::new(&row.2).map_err(|_|"ข้อมูลรหัสผ่านไม่ถูกต้อง".to_string())?;
@@ -40,5 +40,8 @@ pub fn login(app:&AppHandle,username:&str,password:&str)->Result<Session,String>
  conn.execute("UPDATE users SET last_login_at=?1 WHERE id=?2",params![Utc::now().to_rfc3339(),row.0]).map_err(|e|e.to_string())?;
  let mut stmt=conn.prepare("SELECT DISTINCT p.code FROM permissions p JOIN role_permissions rp ON rp.permission_id=p.id JOIN user_roles ur ON ur.role_id=rp.role_id WHERE ur.user_id=?1 ORDER BY p.code").map_err(|e|e.to_string())?;
  let permissions=stmt.query_map([&row.0],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?.filter_map(Result::ok).collect();
- Ok(Session{user_id:row.0,username:row.1,display_name:row.3,permissions})
+ let token=store.issue(row.0)?; Ok(Session{token,username:row.1,display_name:row.3,permissions})
 }
+
+pub fn resolve_active(app:&AppHandle,store:&State<SessionStore>,token:&str)->Result<String,String>{let user_id=store.resolve(token)?;let c=db::open(app)?;let active:i64=c.query_row("SELECT is_active FROM users WHERE id=?1",[&user_id],|r|r.get(0)).map_err(|_|"ไม่พบบัญชีผู้ใช้")?;if active!=1{return Err("บัญชีถูกปิดใช้งาน".into())}Ok(user_id)}
+pub fn logout(store:&State<SessionStore>,token:&str)->Result<(),String>{store.revoke(token)}
