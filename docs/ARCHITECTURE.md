@@ -43,3 +43,6 @@ SQLite
 
 ## Migration source
 Roster Master v5.55 is the reference for existing UI behavior and proven business logic. Migration will be incremental; the HTML prototype will not be embedded as the permanent production architecture.
+
+## Data-scope decision (PO confirmed)
+Employee visibility uses the mixed rule: the home company can always see its employee; a company with an active assignment can see the employee within the assignment-related scope. An assignment does not change the employee's home company. Backend authorization must enforce this rule independently of UI filtering.
