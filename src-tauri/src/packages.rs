@@ -265,7 +265,9 @@ pub fn export_provision(app: &AppHandle, user_id: &str, target_site_code: &str, 
     let source = edition::identity(app)?.and_then(|x| x.site_code).ok_or("Central Site ยังไม่สมบูรณ์")?;
 
     let mut users = Vec::new();
+    let mut seen_user_ids = std::collections::HashSet::new();
     for uid in user_ids {
+        if !seen_user_ids.insert(uid.clone()) { continue; }
         let (id, username, password_hash, display_name) = c.query_row(
             "SELECT id,username,password_hash,display_name FROM users WHERE id=?1 AND is_active=1",
             [&uid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)),
