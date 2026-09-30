@@ -7,6 +7,11 @@ use crate::db;
 #[derive(Serialize)]
 pub struct AppIdentity { pub edition:String, pub site_code:Option<String>, pub site_name:Option<String> }
 
+pub fn build_edition() -> &'static str {
+    #[cfg(feature="central")] { "CENTRAL" }
+    #[cfg(feature="unit")] { "UNIT" }
+}
+
 pub fn identity(app:&AppHandle)->Result<Option<AppIdentity>,String>{
  let c=db::open(app)?;
  let mut s=c.prepare("SELECT edition,site_code,site_name FROM app_identity WHERE singleton_id=1").map_err(|e|e.to_string())?;
@@ -17,7 +22,15 @@ pub fn identity(app:&AppHandle)->Result<Option<AppIdentity>,String>{
  }
 }
 
+pub fn ensure_build_matches_identity(app:&AppHandle)->Result<(),String>{
+ if let Some(i)=identity(app)? {
+   if i.edition != build_edition(){return Err(format!("ฐานข้อมูล Edition {} ไม่ตรงกับโปรแกรม {} build",i.edition,build_edition()))}
+ }
+ Ok(())
+}
+
 pub fn initialize_central(app:&AppHandle,site_code:&str,site_name:&str)->Result<(),String>{
+ if build_edition()!="CENTRAL"{return Err("Unit build ไม่สามารถกำหนด Central identity".into())}
  if identity(app)?.is_some(){return Err("เครื่องนี้ถูกกำหนด Edition แล้ว".into())}
  if site_code.trim().is_empty()||site_name.trim().is_empty(){return Err("กรุณาระบุรหัสและชื่อ Site".into())}
  db::open(app)?.execute("INSERT INTO app_identity(singleton_id,edition,site_code,site_name,initialized_at) VALUES(1,'CENTRAL',?1,?2,?3)",params![site_code.trim(),site_name.trim(),Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;
