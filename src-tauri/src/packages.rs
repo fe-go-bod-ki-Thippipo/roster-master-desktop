@@ -451,8 +451,10 @@ mod tests {
     #[test] fn correctly_signed_test_envelope_is_accepted(){assert!(decode_verified(&signed(&manifest()),Some("SITE-A"),Utc::now()).is_ok());}
     #[test] fn legacy_trusted_package_keys_cannot_supply_attacker_key(){
         let source=include_str!("packages.rs");
-        assert!(!source.contains("SELECT public_key_b64 FROM trusted_package_keys"));
-        assert!(!source.contains("INSERT INTO trusted_package_keys"));
+        let forbidden_select=["SELECT public_key_b64 FROM trusted_","package_keys"].concat();
+        let forbidden_insert=["INSERT INTO trusted_","package_keys"].concat();
+        assert!(!source.contains(&forbidden_select));
+        assert!(!source.contains(&forbidden_insert));
     }
 
     #[cfg(feature="unit")]
