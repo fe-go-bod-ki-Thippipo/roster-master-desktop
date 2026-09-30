@@ -8,8 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:build:central": "tauri build --no-default-features --features central",
-    "tauri:build:unit": "tauri build --no-default-features --features unit --config src-tauri/tauri.unit.conf.json"
+    "tauri:build:central": "tauri build --features central -- --no-default-features",
+    "tauri:build:unit": "tauri build --features unit --config src-tauri/tauri.unit.conf.json -- --no-default-features"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
