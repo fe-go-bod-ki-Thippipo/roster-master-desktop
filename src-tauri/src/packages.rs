@@ -1,56 +1,409 @@
-use chrono::Utc;
-use rusqlite::params;
-use serde::{Deserialize,Serialize};
+use argon2::password_hash::PasswordHash;
+use base64::{engine::general_purpose::STANDARD as B64, Engine};
+use chrono::{DateTime, Duration, Utc};
+use ed25519_dalek::{Signer, SigningKey};
+use rusqlite::{params, OptionalExtension};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::AppHandle;
 use uuid::Uuid;
-use crate::{db,edition,trust};
-use base64::{engine::general_purpose::STANDARD as B64,Engine};
-use ed25519_dalek::{Signer,SigningKey};
-use rand_core::OsRng;
 
-#[derive(Serialize,Deserialize)] pub struct SignedProvision {pub manifest:ProvisionManifest,pub key_id:String,pub public_key_b64:String,pub signature_b64:String}
-#[derive(Serialize,Deserialize)]
-pub struct ProvisionManifest {pub package_id:String,pub schema_version:u32,pub source_site_code:String,pub target_site_code:String,pub target_site_name:String,pub issued_at:String,pub users:Vec<ProvisionUser>}
-#[derive(Serialize,Deserialize)]
-pub struct ProvisionUser {pub id:String,pub username:String,pub password_hash:String,pub display_name:String,pub role_code:String,pub permissions:Vec<String>,pub scope_type:String,pub company_id:Option<String>,pub department_id:Option<String>}
+use crate::{audit, db, edition, trust};
 
-pub fn export_provision(app:&AppHandle,user_id:&str,target_site_code:&str,target_site_name:&str,user_ids:Vec<String>)->Result<String,String>{
- if !edition::is_central(app)?{return Err("สร้าง Package ได้เฉพาะ Central Edition".into())}
- if target_site_code.trim().is_empty()||user_ids.is_empty(){return Err("ต้องระบุ Site ปลายทางและผู้ใช้อย่างน้อย 1 ราย".into())}
- let c=db::open(app)?; let ok:i64=c.query_row("SELECT EXISTS(SELECT 1 FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=?1 AND p.code='user.manage')",[user_id],|r|r.get(0)).map_err(|e|e.to_string())?; if ok!=1{return Err("ไม่มีสิทธิ์สร้าง Package".into())}
- let source=edition::identity(app)?.and_then(|x|x.site_code).ok_or("Central Site ยังไม่สมบูรณ์")?; let mut users=Vec::new();
- for uid in user_ids{
-  let (id,username,password_hash,display_name,role_code,scope_type,company_id,department_id)=c.query_row("SELECT u.id,u.username,u.password_hash,u.display_name,r.code,COALESCE(ds.scope_type,'GLOBAL'),ds.company_id,ds.department_id FROM users u JOIN user_roles ur ON ur.user_id=u.id JOIN roles r ON r.id=ur.role_id LEFT JOIN user_data_scopes ds ON ds.user_id=u.id WHERE u.id=?1 AND u.is_active=1",[&uid],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).map_err(|e|e.to_string())?;
-  if role_code=="SYSTEM_ADMIN"{return Err("ห้ามส่ง SYSTEM_ADMIN ไป Unit".into())}
-  let mut ps=c.prepare("SELECT p.code FROM permissions p JOIN role_permissions rp ON rp.permission_id=p.id JOIN roles r ON r.id=rp.role_id WHERE r.code=?1 ORDER BY p.code").map_err(|e|e.to_string())?;
-  let permissions=ps.query_map([&role_code],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?.filter_map(Result::ok).collect();
-  users.push(ProvisionUser{id,username,password_hash,display_name,role_code,permissions,scope_type,company_id,department_id});
- }
- { let manifest=ProvisionManifest{package_id:Uuid::new_v4().to_string(),schema_version:1,source_site_code:source,target_site_code:target_site_code.trim().into(),target_site_name:target_site_name.trim().into(),issued_at:Utc::now().to_rfc3339(),users};
- let payload=serde_json::to_vec(&manifest).map_err(|e|e.to_string())?;
- let key_row=c.query_row("SELECT key_id,private_key_b64,public_key_b64 FROM package_signing_keys WHERE is_active=1 ORDER BY created_at DESC LIMIT 1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)));
- let (key_id,private_b64,public_b64)=match key_row{Ok(v)=>v,Err(_)=>{let sk=SigningKey::generate(&mut OsRng);let kid=Uuid::new_v4().to_string();let priv64=B64.encode(sk.to_bytes());let pub64=B64.encode(sk.verifying_key().to_bytes());c.execute("INSERT INTO package_signing_keys(id,key_id,private_key_b64,public_key_b64,is_active,created_at) VALUES(?1,?2,?3,?4,1,?5)",params![Uuid::new_v4().to_string(),kid,priv64,pub64,Utc::now().to_rfc3339()]).map_err(|e|e.to_string())?;(kid,priv64,pub64)}};
- let private_bytes=B64.decode(private_b64).map_err(|_|"Signing key ไม่ถูกต้อง")?;let arr:[u8;32]=private_bytes.try_into().map_err(|_|"Signing key length ไม่ถูกต้อง")?;let sk=SigningKey::from_bytes(&arr);let signature=sk.sign(&payload);
- serde_json::to_string_pretty(&SignedProvision{manifest,key_id,public_key_b64:public_b64,signature_b64:B64.encode(signature.to_bytes())}).map_err(|e|e.to_string()) }
+const MAX_PACKAGE_BYTES: usize = 5 * 1024 * 1024;
+const PACKAGE_FORMAT: &str = "RMPKG-PROVISION-v2";
+const PACKAGE_TYPE: &str = "PROVISION";
+const KEY_ENV: &str = "ALPHA";
+const TARGET_EDITION: &str = "UNIT";
+const CLOCK_SKEW_MINUTES: i64 = 5;
+
+const ALLOWED_ROLES: &[&str] = &["CENTRAL_HR", "COMPANY_HR", "MANAGER", "STAFF", "VIEWER"];
+const ALLOWED_PERMISSIONS: &[&str] = &[
+    "dashboard.view", "employee.view", "employee.create", "employee.update", "employee.terminate",
+    "position.view", "position.manage", "department.view", "department.manage",
+    "assignment.view", "assignment.manage", "import.employee", "export.employee",
+    "export.dashboard", "audit.view",
+];
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisionEnvelope {
+    pub format: String,
+    pub key_id: String,
+    pub payload_b64: String,
+    pub signature_b64: String,
 }
 
-pub fn import_provision(app:&AppHandle,json:&str)->Result<(),String>{
- if edition::identity(app)?.is_some(){return Err("เครื่องนี้ถูก Provision แล้ว".into())}
- let signed:SignedProvision=serde_json::from_str(json).map_err(|_|"Package ไม่ถูกต้อง".to_string())?;
- let payload=serde_json::to_vec(&signed.manifest).map_err(|e|e.to_string())?; let c=db::open(app)?; let trusted:String=c.query_row("SELECT public_key FROM trusted_package_keys WHERE key_id=?1 AND is_active=1",[&signed.key_id],|r|r.get(0)).map_err(|_|"Unit ยังไม่ได้ติดตั้ง Trust Anchor ของ Central".to_string())?; if trusted!=signed.public_key_b64{return Err("Public key ใน Package ไม่ตรงกับ Central ที่เชื่อถือ".into())} trust::verify(&trusted,&signed.signature_b64,&payload)?;
- let p=signed.manifest;
- if p.schema_version!=1||p.users.is_empty(){return Err("Package version หรือข้อมูลผู้ใช้ไม่ถูกต้อง".into())}
- let tx=c.unchecked_transaction().map_err(|e|e.to_string())?; let now=Utc::now().to_rfc3339();
- tx.execute("INSERT INTO app_identity(singleton_id,edition,site_code,site_name,initialized_at) VALUES(1,'UNIT',?1,?2,?3)",params![p.target_site_code,p.target_site_name,now]).map_err(|e|e.to_string())?;
- for u in p.users{
-  if u.role_code=="SYSTEM_ADMIN"{return Err("Unit Package ห้ามมี SYSTEM_ADMIN".into())}
-  let role_id=Uuid::new_v4().to_string(); tx.execute("INSERT OR IGNORE INTO roles(id,code,name) VALUES(?1,?2,?2)",params![role_id,u.role_code]).map_err(|e|e.to_string())?;
-  let actual_role:String=tx.query_row("SELECT id FROM roles WHERE code=?1",[&u.role_code],|r|r.get(0)).map_err(|e|e.to_string())?;
-  for code in u.permissions{let pid=Uuid::new_v4().to_string();tx.execute("INSERT OR IGNORE INTO permissions(id,code,name) VALUES(?1,?2,?2)",params![pid,code]).map_err(|e|e.to_string())?;tx.execute("INSERT OR IGNORE INTO role_permissions(role_id,permission_id) SELECT ?1,id FROM permissions WHERE code=?2",params![actual_role,code]).map_err(|e|e.to_string())?;}
-  tx.execute("INSERT INTO users(id,username,password_hash,display_name,is_active,created_at,updated_at) VALUES(?1,?2,?3,?4,1,?5,?5)",params![u.id,u.username,u.password_hash,u.display_name,now]).map_err(|e|e.to_string())?;
-  tx.execute("INSERT INTO user_roles(user_id,role_id) VALUES(?1,?2)",params![u.id,actual_role]).map_err(|e|e.to_string())?;
-  tx.execute("INSERT INTO user_data_scopes(id,user_id,scope_type,company_id,department_id) VALUES(?1,?2,?3,?4,?5)",params![Uuid::new_v4().to_string(),u.id,u.scope_type,u.company_id,u.department_id]).map_err(|e|e.to_string())?;
- }
- tx.execute("INSERT INTO package_imports(id,package_id,source_site_code,target_site_code,package_type,manifest_json,imported_at) VALUES(?1,?2,?3,?4,'PROVISION',?5,?6)",params![Uuid::new_v4().to_string(),p.package_id,p.source_site_code,p.target_site_code,json,now]).map_err(|e|e.to_string())?;
- tx.commit().map_err(|e|e.to_string())
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisionManifest {
+    pub schema_version: u32,
+    pub package_type: String,
+    pub key_env: String,
+    pub target_edition: String,
+    pub package_id: String,
+    pub source_site_code: String,
+    pub target_site_code: String,
+    pub target_site_name: String,
+    pub issued_at: String,
+    pub expires_at: String,
+    pub users: Vec<ProvisionUser>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisionUser {
+    pub id: String,
+    pub username: String,
+    pub password_hash: String,
+    pub display_name: String,
+    pub role_code: String,
+    pub permissions: Vec<String>,
+    pub scopes: Vec<ProvisionScope>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisionScope {
+    pub scope_type: String,
+    pub company_id: Option<String>,
+    pub department_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProvisionInspection {
+    pub package_id: String,
+    pub source_site_code: String,
+    pub target_site_code: String,
+    pub target_site_name: String,
+    pub issued_at: String,
+    pub expires_at: String,
+    pub key_id: String,
+    pub key_env: String,
+    pub user_count: usize,
+    pub usernames: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SigningKeyStatus {
+    pub installed: bool,
+    pub key_id: Option<String>,
+    pub key_env: Option<String>,
+    pub embedded_trust: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SigningKeyFile {
+    key_id: String,
+    env: String,
+    private_key_b64: String,
+    public_key_b64: String,
+}
+
+fn is_system_admin(conn: &rusqlite::Connection, user_id: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id=?1 AND r.code='SYSTEM_ADMIN')",
+        [user_id],
+        |r| r.get::<_, i64>(0),
+    ).map(|v| v == 1).map_err(|e| e.to_string())
+}
+
+fn has_permission(conn: &rusqlite::Connection, user_id: &str, permission: &str) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id JOIN permissions p ON p.id=rp.permission_id WHERE ur.user_id=?1 AND p.code=?2)",
+        params![user_id, permission],
+        |r| r.get::<_, i64>(0),
+    ).map(|v| v == 1).map_err(|e| e.to_string())
+}
+
+fn validate_hash(hash: &str) -> Result<(), String> {
+    if !hash.starts_with("$argon2id$") {
+        return Err("Package มี password hash ที่ไม่ใช่ Argon2id".into());
+    }
+    let parsed = PasswordHash::new(hash).map_err(|_| "Package มี password hash ที่ไม่ถูกต้อง".to_string())?;
+    if parsed.algorithm.as_str() != "argon2id" {
+        return Err("Package มี password hash ที่ไม่ใช่ Argon2id".into());
+    }
+    Ok(())
+}
+
+fn validate_scope(scope: &ProvisionScope) -> Result<(), String> {
+    match scope.scope_type.as_str() {
+        "GLOBAL" if scope.company_id.is_none() && scope.department_id.is_none() => Ok(()),
+        "COMPANY" if scope.company_id.as_deref().is_some_and(|v| !v.trim().is_empty()) && scope.department_id.is_none() => Ok(()),
+        "DEPARTMENT" if scope.department_id.as_deref().is_some_and(|v| !v.trim().is_empty()) => Ok(()),
+        _ => Err("Package มี Data Scope ไม่ถูกต้อง".into()),
+    }
+}
+
+fn validate_manifest(p: &ProvisionManifest, key: &trust::EmbeddedKey, expected_site_code: Option<&str>, now: DateTime<Utc>) -> Result<(), String> {
+    if p.schema_version != 2 || p.package_type != PACKAGE_TYPE || p.target_edition != TARGET_EDITION {
+        return Err("Package type/version/edition ไม่ถูกต้อง".into());
+    }
+    if p.key_env != KEY_ENV || p.key_env != key.env {
+        return Err("Package key environment ไม่ถูกต้อง".into());
+    }
+    if p.package_id.trim().is_empty() || p.source_site_code.trim().is_empty() || p.target_site_code.trim().is_empty() || p.target_site_name.trim().is_empty() {
+        return Err("Package identity ไม่สมบูรณ์".into());
+    }
+    if let Some(expected) = expected_site_code {
+        if p.target_site_code != expected.trim() {
+            return Err("Package นี้ไม่ได้ออกให้ Site ที่ระบุ".into());
+        }
+    }
+    let issued = DateTime::parse_from_rfc3339(&p.issued_at).map_err(|_| "issued_at ไม่ถูกต้อง")?.with_timezone(&Utc);
+    let expires = DateTime::parse_from_rfc3339(&p.expires_at).map_err(|_| "expires_at ไม่ถูกต้อง")?.with_timezone(&Utc);
+    if issued > now + Duration::minutes(CLOCK_SKEW_MINUTES) {
+        return Err("เวลาออก Package อยู่ในอนาคตเกิน clock skew".into());
+    }
+    if expires <= now {
+        return Err("Package หมดอายุแล้ว".into());
+    }
+    let lifetime = expires - issued;
+    if lifetime < Duration::days(1) || lifetime > Duration::days(30) {
+        return Err("อายุ Package ต้องอยู่ระหว่าง 1–30 วัน".into());
+    }
+    if p.users.is_empty() {
+        return Err("Package ต้องมีผู้ใช้อย่างน้อย 1 ราย".into());
+    }
+    for u in &p.users {
+        if u.id.trim().is_empty() || u.username.trim().len() < 3 || u.display_name.trim().is_empty() {
+            return Err("ข้อมูลผู้ใช้ใน Package ไม่สมบูรณ์".into());
+        }
+        if !ALLOWED_ROLES.contains(&u.role_code.as_str()) {
+            return Err("Package มี Role ที่ Unit ไม่อนุญาต".into());
+        }
+        if u.permissions.iter().any(|x| !ALLOWED_PERMISSIONS.contains(&x.as_str())) {
+            return Err("Package มี Permission ที่ Unit ไม่อนุญาต".into());
+        }
+        if u.scopes.is_empty() {
+            return Err("Package ต้องมี Scope อย่างน้อย 1 รายการต่อผู้ใช้".into());
+        }
+        for scope in &u.scopes { validate_scope(scope)?; }
+        validate_hash(&u.password_hash)?;
+    }
+    Ok(())
+}
+
+fn decode_verified(json: &str, expected_site_code: Option<&str>, now: DateTime<Utc>) -> Result<(ProvisionEnvelope, ProvisionManifest), String> {
+    if json.as_bytes().len() > MAX_PACKAGE_BYTES {
+        return Err("Package มีขนาดเกิน 5MB".into());
+    }
+    let envelope: ProvisionEnvelope = serde_json::from_str(json).map_err(|_| "Envelope ไม่ถูกต้อง".to_string())?;
+    if envelope.format != PACKAGE_FORMAT {
+        return Err("Package format ไม่ถูกต้อง".into());
+    }
+    let payload = B64.decode(&envelope.payload_b64).map_err(|_| "payload_b64 ไม่ถูกต้อง".to_string())?;
+    if payload.len() > MAX_PACKAGE_BYTES {
+        return Err("Payload มีขนาดเกิน 5MB".into());
+    }
+    let key = trust::verify_envelope(&envelope.key_id, &envelope.signature_b64, &payload)?;
+    let manifest: ProvisionManifest = serde_json::from_slice(&payload).map_err(|_| "Payload JSON ไม่ถูกต้อง".to_string())?;
+    validate_manifest(&manifest, &key, expected_site_code, now)?;
+    Ok((envelope, manifest))
+}
+
+#[cfg(feature = "central")]
+pub fn install_signing_key(app: &AppHandle, user_id: &str, key_json: &str) -> Result<(), String> {
+    if !edition::is_central(app)? { return Err("ติดตั้ง Signing Key ได้เฉพาะ Central Edition".into()); }
+    if key_json.as_bytes().len() > 64 * 1024 { return Err("Signing key file ใหญ่ผิดปกติ".into()); }
+    let c = db::open(app)?;
+    if !is_system_admin(&c, user_id)? { return Err("เฉพาะ SYSTEM_ADMIN เท่านั้นที่ติดตั้ง Signing Key ได้".into()); }
+    let file: SigningKeyFile = serde_json::from_str(key_json).map_err(|_| "ไฟล์ .rmkey ไม่ถูกต้อง".to_string())?;
+    if file.env != KEY_ENV { return Err("รอบ Alpha รับเฉพาะ ALPHA signing key".into()); }
+    let trusted = trust::trusted_key(&file.key_id)?;
+    if trusted.env != KEY_ENV || trusted.public_key_b64 != file.public_key_b64 {
+        return Err("Signing key ไม่ตรงกับ Embedded ALPHA Trust Anchor".into());
+    }
+    let private = B64.decode(&file.private_key_b64).map_err(|_| "Private key ไม่ถูกต้อง")?;
+    let arr: [u8; 32] = private.try_into().map_err(|_| "Private key length ไม่ถูกต้อง")?;
+    let sk = SigningKey::from_bytes(&arr);
+    let derived = sk.verifying_key().to_bytes();
+    if B64.encode(derived) != file.public_key_b64 {
+        return Err("Private/Public key ไม่ใช่คู่เดียวกัน".into());
+    }
+    let digest = Sha256::digest(derived);
+    let derived_id = digest[..8].iter().map(|b| format!("{b:02x}")).collect::<String>();
+    if derived_id != file.key_id { return Err("key_id ไม่ตรงกับ SHA-256 ของ public key".into()); }
+
+    let tx = c.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute("UPDATE central_signing_keys SET is_active=0 WHERE is_active=1", []).map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO central_signing_keys(id,key_id,key_env,private_key_b64,public_key_b64,installed_at,installed_by_user_id,is_active) VALUES(?1,?2,?3,?4,?5,?6,?7,1)
+         ON CONFLICT(key_id) DO UPDATE SET key_env=excluded.key_env,private_key_b64=excluded.private_key_b64,public_key_b64=excluded.public_key_b64,installed_at=excluded.installed_at,installed_by_user_id=excluded.installed_by_user_id,is_active=1",
+        params![Uuid::new_v4().to_string(), file.key_id, file.env, file.private_key_b64, file.public_key_b64, Utc::now().to_rfc3339(), user_id],
+    ).map_err(|e| e.to_string())?;
+    audit::write(&tx, user_id, "INSTALL", "SIGNING_KEY", &file.key_id, None, Some(r#"{"env":"ALPHA"}"#))?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "central")]
+pub fn signing_key_status(app: &AppHandle, user_id: &str) -> Result<SigningKeyStatus, String> {
+    if !edition::is_central(app)? { return Err("Signing Key Status ใช้ได้เฉพาะ Central Edition".into()); }
+    let c = db::open(app)?;
+    if !is_system_admin(&c, user_id)? { return Err("เฉพาะ SYSTEM_ADMIN เท่านั้นที่ดู Signing Key Status ได้".into()); }
+    let row = c.query_row(
+        "SELECT key_id,key_env FROM central_signing_keys WHERE is_active=1 ORDER BY installed_at DESC LIMIT 1",
+        [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+    ).optional().map_err(|e| e.to_string())?;
+    match row {
+        Some((key_id, key_env)) => Ok(SigningKeyStatus { embedded_trust: trust::trusted_key(&key_id).is_ok(), installed: true, key_id: Some(key_id), key_env: Some(key_env) }),
+        None => Ok(SigningKeyStatus { installed: false, key_id: None, key_env: None, embedded_trust: false }),
+    }
+}
+
+#[cfg(feature = "central")]
+pub fn export_provision(app: &AppHandle, user_id: &str, target_site_code: &str, target_site_name: &str, user_ids: Vec<String>, valid_days: i64) -> Result<String, String> {
+    if !edition::is_central(app)? { return Err("สร้าง Package ได้เฉพาะ Central Edition".into()); }
+    if target_site_code.trim().is_empty() || target_site_name.trim().is_empty() || user_ids.is_empty() {
+        return Err("ต้องระบุ Site ปลายทาง ชื่อ Site และผู้ใช้อย่างน้อย 1 ราย".into());
+    }
+    if !(1..=30).contains(&valid_days) { return Err("อายุ Package ต้องอยู่ระหว่าง 1–30 วัน".into()); }
+    let c = db::open(app)?;
+    if !has_permission(&c, user_id, "user.manage")? { return Err("ไม่มีสิทธิ์สร้าง Package".into()); }
+    let source = edition::identity(app)?.and_then(|x| x.site_code).ok_or("Central Site ยังไม่สมบูรณ์")?;
+
+    let mut users = Vec::new();
+    for uid in user_ids {
+        let (id, username, password_hash, display_name) = c.query_row(
+            "SELECT id,username,password_hash,display_name FROM users WHERE id=?1 AND is_active=1",
+            [&uid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        ).map_err(|_| "ไม่พบผู้ใช้ที่ใช้งานอยู่".to_string())?;
+        validate_hash(&password_hash)?;
+        let roles: Vec<String> = {
+            let mut s = c.prepare("SELECT r.code FROM roles r JOIN user_roles ur ON ur.role_id=r.id WHERE ur.user_id=?1 ORDER BY r.code").map_err(|e| e.to_string())?;
+            s.query_map([&uid], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?.filter_map(Result::ok).collect()
+        };
+        if roles.len() != 1 || !ALLOWED_ROLES.contains(&roles[0].as_str()) {
+            return Err("ผู้ใช้ที่จะส่งไป Unit ต้องมี Role ที่อนุญาตเพียง 1 Role และห้าม SYSTEM_ADMIN".into());
+        }
+        let role_code = roles[0].clone();
+        let permissions: Vec<String> = {
+            let mut s = c.prepare("SELECT p.code FROM permissions p JOIN role_permissions rp ON rp.permission_id=p.id JOIN roles r ON r.id=rp.role_id WHERE r.code=?1 ORDER BY p.code").map_err(|e| e.to_string())?;
+            s.query_map([&role_code], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?.filter_map(Result::ok).collect()
+        };
+        if permissions.iter().any(|x| !ALLOWED_PERMISSIONS.contains(&x.as_str())) {
+            return Err("Role มี Permission ที่ Unit allowlist ไม่อนุญาต".into());
+        }
+        let scopes: Vec<ProvisionScope> = {
+            let mut s = c.prepare("SELECT scope_type,company_id,department_id FROM user_data_scopes WHERE user_id=?1 ORDER BY scope_type,company_id,department_id").map_err(|e| e.to_string())?;
+            s.query_map([&uid], |r| Ok(ProvisionScope { scope_type: r.get(0)?, company_id: r.get(1)?, department_id: r.get(2)? })).map_err(|e| e.to_string())?.filter_map(Result::ok).collect()
+        };
+        if scopes.is_empty() { return Err("ผู้ใช้ที่จะส่งไป Unit ต้องมี Data Scope".into()); }
+        for s in &scopes { validate_scope(s)?; }
+        users.push(ProvisionUser { id, username, password_hash, display_name, role_code, permissions, scopes });
+    }
+
+    let (key_id, private_b64, key_env) = c.query_row(
+        "SELECT key_id,private_key_b64,key_env FROM central_signing_keys WHERE is_active=1 ORDER BY installed_at DESC LIMIT 1",
+        [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+    ).map_err(|_| "Central ยังไม่ได้ติดตั้ง ALPHA Signing Key".to_string())?;
+    let trusted = trust::trusted_key(&key_id)?;
+    if key_env != KEY_ENV || trusted.env != KEY_ENV { return Err("Signing Key environment ไม่ถูกต้อง".into()); }
+
+    let issued = Utc::now();
+    let manifest = ProvisionManifest {
+        schema_version: 2, package_type: PACKAGE_TYPE.into(), key_env: KEY_ENV.into(), target_edition: TARGET_EDITION.into(),
+        package_id: Uuid::new_v4().to_string(), source_site_code: source, target_site_code: target_site_code.trim().into(),
+        target_site_name: target_site_name.trim().into(), issued_at: issued.to_rfc3339(),
+        expires_at: (issued + Duration::days(valid_days)).to_rfc3339(), users,
+    };
+    let payload = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
+    let private = B64.decode(private_b64).map_err(|_| "Signing key ไม่ถูกต้อง")?;
+    let arr: [u8; 32] = private.try_into().map_err(|_| "Signing key length ไม่ถูกต้อง")?;
+    let sk = SigningKey::from_bytes(&arr);
+    if B64.encode(sk.verifying_key().to_bytes()) != trusted.public_key_b64 { return Err("Installed Signing Key ไม่ตรงกับ Trust Anchor".into()); }
+    let mut message = trust::DOMAIN_PREFIX.to_vec();
+    message.extend_from_slice(&payload);
+    let signature = sk.sign(&message);
+    let envelope = ProvisionEnvelope { format: PACKAGE_FORMAT.into(), key_id, payload_b64: B64.encode(&payload), signature_b64: B64.encode(signature.to_bytes()) };
+    let json = serde_json::to_string_pretty(&envelope).map_err(|e| e.to_string())?;
+    audit::write(&c, user_id, "EXPORT", "PROVISION_PACKAGE", &manifest.package_id, None, Some(&format!(r#"{{"target_site_code":"{}","users":{}}}"#, manifest.target_site_code, manifest.users.len())))?;
+    Ok(json)
+}
+
+pub fn inspect_provision(json: &str) -> Result<ProvisionInspection, String> {
+    let (envelope, p) = decode_verified(json, None, Utc::now())?;
+    Ok(ProvisionInspection {
+        package_id: p.package_id, source_site_code: p.source_site_code, target_site_code: p.target_site_code,
+        target_site_name: p.target_site_name, issued_at: p.issued_at, expires_at: p.expires_at,
+        key_id: envelope.key_id, key_env: p.key_env, user_count: p.users.len(),
+        usernames: p.users.into_iter().map(|u| u.username).collect(),
+    })
+}
+
+#[cfg(feature = "unit")]
+pub fn import_provision(app: &AppHandle, json: &str, expected_site_code: &str) -> Result<(), String> {
+    if expected_site_code.trim().is_empty() { return Err("ต้องพิมพ์ Site Code เพื่อยืนยัน".into()); }
+    if edition::identity(app)?.is_some() { return Err("เครื่องนี้ถูก Provision แล้ว".into()); }
+    let (_envelope, p) = decode_verified(json, Some(expected_site_code), Utc::now())?;
+    let c = db::open(app)?;
+    let tx = c.unchecked_transaction().map_err(|e| e.to_string())?;
+    let already: i64 = tx.query_row("SELECT EXISTS(SELECT 1 FROM package_imports WHERE package_id=?1)", [&p.package_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if already == 1 { return Err("Package นี้เคยถูกนำเข้าแล้ว".into()); }
+    let now = Utc::now().to_rfc3339();
+    tx.execute("INSERT INTO app_identity(singleton_id,edition,site_code,site_name,initialized_at) VALUES(1,'UNIT',?1,?2,?3)", params![p.target_site_code, p.target_site_name, now]).map_err(|e| e.to_string())?;
+
+    for u in &p.users {
+        let role_id = Uuid::new_v4().to_string();
+        tx.execute("INSERT OR IGNORE INTO roles(id,code,name) VALUES(?1,?2,?2)", params![role_id, u.role_code]).map_err(|e| e.to_string())?;
+        let actual_role: String = tx.query_row("SELECT id FROM roles WHERE code=?1", [&u.role_code], |r| r.get(0)).map_err(|e| e.to_string())?;
+        for code in &u.permissions {
+            let pid = Uuid::new_v4().to_string();
+            tx.execute("INSERT OR IGNORE INTO permissions(id,code,name) VALUES(?1,?2,?2)", params![pid, code]).map_err(|e| e.to_string())?;
+            tx.execute("INSERT OR IGNORE INTO role_permissions(role_id,permission_id) SELECT ?1,id FROM permissions WHERE code=?2", params![actual_role, code]).map_err(|e| e.to_string())?;
+        }
+        tx.execute("INSERT INTO users(id,username,password_hash,display_name,is_active,created_at,updated_at) VALUES(?1,?2,?3,?4,1,?5,?5)", params![u.id, u.username, u.password_hash, u.display_name, now]).map_err(|e| e.to_string())?;
+        tx.execute("INSERT INTO user_roles(user_id,role_id) VALUES(?1,?2)", params![u.id, actual_role]).map_err(|e| e.to_string())?;
+        for s in &u.scopes {
+            tx.execute("INSERT INTO user_data_scopes(id,user_id,scope_type,company_id,department_id) VALUES(?1,?2,?3,?4,?5)", params![Uuid::new_v4().to_string(), u.id, s.scope_type, s.company_id, s.department_id]).map_err(|e| e.to_string())?;
+        }
+    }
+    let stored = serde_json::to_string(&p).map_err(|e| e.to_string())?;
+    tx.execute("INSERT INTO package_imports(id,package_id,source_site_code,target_site_code,package_type,manifest_json,imported_at) VALUES(?1,?2,?3,?4,'PROVISION',?5,?6)", params![Uuid::new_v4().to_string(), p.package_id, p.source_site_code, p.target_site_code, stored, now]).map_err(|e| e.to_string())?;
+    tx.execute("INSERT INTO audit_logs(id,user_id,action,entity_type,entity_id,after_json,occurred_at) VALUES(?1,NULL,'IMPORT','PROVISION_PACKAGE',?2,?3,?4)", params![Uuid::new_v4().to_string(), p.package_id, format!(r#"{{"source_site_code":"{}","target_site_code":"{}","users":{}}}"#, p.source_site_code, p.target_site_code, p.users.len()), now]).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use argon2::{password_hash::{rand_core::OsRng as SaltRng, SaltString}, Argon2, PasswordHasher};
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand_core::OsRng;
+
+    fn hash() -> String {
+        Argon2::default().hash_password(b"alpha-test-password", &SaltString::generate(&mut SaltRng)).unwrap().to_string()
+    }
+    fn key() -> trust::EmbeddedKey { trust::embedded_keys().unwrap().remove(0) }
+    fn manifest() -> ProvisionManifest {
+        let now = Utc::now();
+        ProvisionManifest {
+            schema_version: 2, package_type: PACKAGE_TYPE.into(), key_env: KEY_ENV.into(), target_edition: TARGET_EDITION.into(),
+            package_id: Uuid::new_v4().to_string(), source_site_code: "CENTRAL".into(), target_site_code: "SITE-A".into(),
+            target_site_name: "Site A".into(), issued_at: now.to_rfc3339(), expires_at: (now + Duration::days(7)).to_rfc3339(),
+            users: vec![ProvisionUser { id: Uuid::new_v4().to_string(), username: "user-a".into(), password_hash: hash(), display_name: "User A".into(),
+                role_code: "VIEWER".into(), permissions: vec!["dashboard.view".into()], scopes: vec![ProvisionScope { scope_type: "GLOBAL".into(), company_id: None, department_id: None }] }],
+        }
+    }
+
+    #[test] fn attack_01_system_admin_role_rejected(){let mut p=manifest();p.users[0].role_code="SYSTEM_ADMIN".into();assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
+    #[test] fn attack_02_unknown_permission_rejected(){let mut p=manifest();p.users[0].permissions.push("role.manage".into());assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
+    #[test] fn attack_03_plaintext_password_rejected(){let mut p=manifest();p.users[0].password_hash="password123".into();assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
+    #[test] fn attack_04_argon2i_rejected(){let mut p=manifest();p.users[0].password_hash=p.users[0].password_hash.replacen("$argon2id$","$argon2i$",1);assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
+    #[test] fn attack_05_wrong_target_site_rejected(){let p=manifest();assert!(validate_manifest(&p,&key(),Some("SITE-B"),Utc::now()).is_err());}
+    #[test] fn attack_06_expired_rejected(){let mut p=manifest();p.issued_at=(Utc::now()-Duration::days(3)).to_rfc3339();p.expires_at=(Utc::now()-Duration::days(1)).to_rfc3339();assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
+    #[test] fn attack_07_future_clock_rejected(){let mut p=manifest();p.issued_at=(Utc::now()+Duration::hours(1)).to_rfc3339();p.expires_at=(Utc::now()+Duration::days(2)).to_rfc3339();assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
+    #[test] fn attack_08_over_30_days_rejected(){let mut p=manifest();p.expires_at=(Utc::now()+Duration::days(31)).to_rfc3339();assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
+    #[test] fn attack_09_under_1_day_rejected(){let mut p=manifest();p.expires_at=(Utc::now()+Duration::hours(12)).to_rfc3339();assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
+    #[test] fn attack_10_wrong_edition_rejected(){let mut p=manifest();p.target_edition="CENTRAL".into();assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
+    #[test] fn attack_11_wrong_environment_rejected(){let mut p=manifest();p.key_env="PRODUCTION".into();assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
+    #[test] fn attack_12_invalid_scope_rejected(){let mut p=manifest();p.users[0].scopes[0]=ProvisionScope{scope_type:"COMPANY".into(),company_id:None,department_id:None};assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
+    #[test] fn attack_13_oversized_envelope_rejected(){let huge="x".repeat(MAX_PACKAGE_BYTES+1);assert!(decode_verified(&huge,None,Utc::now()).is_err());}
+    #[test] fn attack_14_tampered_payload_signature_rejected(){
+        let sk=SigningKey::generate(&mut OsRng);let payload=b"payload-a";let mut msg=trust::DOMAIN_PREFIX.to_vec();msg.extend_from_slice(payload);
+        let sig=sk.sign(&msg);let pk=B64.encode(sk.verifying_key().to_bytes());let sb=B64.encode(sig.to_bytes());
+        assert!(trust::verify_with_public_key_for_test(&pk,&sb,b"payload-b").is_err());
+    }
 }
