@@ -50,3 +50,27 @@ pub fn run() {
     builder.run(tauri::generate_context!())
         .expect("error while running Roster Master Desktop");
 }
+
+
+#[cfg(test)]
+mod ipc_isolation_tests {
+    const SOURCE:&str=include_str!("lib.rs");
+    fn central_handler_block()->&'static str{
+        let a=SOURCE.find("#[cfg(feature=\"central\")]\n    let builder").unwrap();
+        let b=SOURCE[a..].find("#[cfg(feature=\"unit\")]").map(|x|a+x).unwrap();
+        &SOURCE[a..b]
+    }
+    fn unit_handler_block()->&'static str{
+        let a=SOURCE.find("#[cfg(feature=\"unit\")]\n    let builder").unwrap();
+        let b=SOURCE[a..].find("builder.run").map(|x|a+x).unwrap();
+        &SOURCE[a..b]
+    }
+    #[test] fn ipc_command_sets_are_edition_isolated(){
+        let central=central_handler_block();let unit=unit_handler_block();
+        for cmd in ["initialize_central","create_first_admin","create_managed_user","list_managed_users","install_signing_key","signing_key_status","export_provision_package"]{
+            assert!(central.contains(cmd),"{cmd} missing from Central IPC");assert!(!unit.contains(cmd),"{cmd} leaked into Unit IPC");
+        }
+        assert!(unit.contains("import_provision_package"));assert!(!central.contains("import_provision_package"));
+        for cmd in ["inspect_provision_package","build_edition"]{assert!(central.contains(cmd));assert!(unit.contains(cmd));}
+    }
+}
