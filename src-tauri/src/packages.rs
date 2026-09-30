@@ -378,38 +378,73 @@ mod tests {
     use argon2::{password_hash::{rand_core::OsRng as SaltRng, SaltString}, Argon2, PasswordHasher};
     use ed25519_dalek::{Signer, SigningKey};
     use rand_core::OsRng;
+    use serde_json::{json, Value};
 
-    fn hash() -> String {
-        Argon2::default().hash_password(b"alpha-test-password", &SaltString::generate(&mut SaltRng)).unwrap().to_string()
-    }
-    fn key() -> trust::EmbeddedKey { trust::embedded_keys().unwrap().remove(0) }
-    fn manifest() -> ProvisionManifest {
-        let now = Utc::now();
-        ProvisionManifest {
-            schema_version: 2, package_type: PACKAGE_TYPE.into(), key_env: KEY_ENV.into(), target_edition: TARGET_EDITION.into(),
-            package_id: Uuid::new_v4().to_string(), source_site_code: "CENTRAL".into(), target_site_code: "SITE-A".into(),
-            target_site_name: "Site A".into(), issued_at: now.to_rfc3339(), expires_at: (now + Duration::days(7)).to_rfc3339(),
-            users: vec![ProvisionUser { id: Uuid::new_v4().to_string(), username: "user-a".into(), password_hash: hash(), display_name: "User A".into(),
-                role_code: "VIEWER".into(), permissions: vec!["dashboard.view".into()], scopes: vec![ProvisionScope { scope_type: "GLOBAL".into(), company_id: None, department_id: None }] }],
-        }
-    }
+    const TEST_PRIVATE_B64:&str="AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
+    const TEST_KEY_ID:&str="65b60673d6ed884b";
 
-    #[test] fn attack_01_system_admin_role_rejected(){let mut p=manifest();p.users[0].role_code="SYSTEM_ADMIN".into();assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
-    #[test] fn attack_02_unknown_permission_rejected(){let mut p=manifest();p.users[0].permissions.push("role.manage".into());assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
-    #[test] fn attack_03_plaintext_password_rejected(){let mut p=manifest();p.users[0].password_hash="password123".into();assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
-    #[test] fn attack_04_argon2i_rejected(){let mut p=manifest();p.users[0].password_hash=p.users[0].password_hash.replacen("$argon2id$","$argon2i$",1);assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
-    #[test] fn attack_05_wrong_target_site_rejected(){let p=manifest();assert!(validate_manifest(&p,&key(),Some("SITE-B"),Utc::now()).is_err());}
-    #[test] fn attack_06_expired_rejected(){let mut p=manifest();p.issued_at=(Utc::now()-Duration::days(3)).to_rfc3339();p.expires_at=(Utc::now()-Duration::days(1)).to_rfc3339();assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
-    #[test] fn attack_07_future_clock_rejected(){let mut p=manifest();p.issued_at=(Utc::now()+Duration::hours(1)).to_rfc3339();p.expires_at=(Utc::now()+Duration::days(2)).to_rfc3339();assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
-    #[test] fn attack_08_over_30_days_rejected(){let mut p=manifest();p.expires_at=(Utc::now()+Duration::days(31)).to_rfc3339();assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
-    #[test] fn attack_09_under_1_day_rejected(){let mut p=manifest();p.expires_at=(Utc::now()+Duration::hours(12)).to_rfc3339();assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
-    #[test] fn attack_10_wrong_edition_rejected(){let mut p=manifest();p.target_edition="CENTRAL".into();assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
-    #[test] fn attack_11_wrong_environment_rejected(){let mut p=manifest();p.key_env="PRODUCTION".into();assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
-    #[test] fn attack_12_invalid_scope_rejected(){let mut p=manifest();p.users[0].scopes[0]=ProvisionScope{scope_type:"COMPANY".into(),company_id:None,department_id:None};assert!(validate_manifest(&p,&key(),None,Utc::now()).is_err());}
+    fn hash()->String{Argon2::default().hash_password(b"alpha-test-password",&SaltString::generate(&mut SaltRng)).unwrap().to_string()}
+    fn manifest()->ProvisionManifest{
+        let now=Utc::now();
+        ProvisionManifest{schema_version:2,package_type:PACKAGE_TYPE.into(),key_env:KEY_ENV.into(),target_edition:TARGET_EDITION.into(),
+          package_id:Uuid::new_v4().to_string(),source_site_code:"CENTRAL".into(),target_site_code:"SITE-A".into(),target_site_name:"Site A".into(),
+          issued_at:now.to_rfc3339(),expires_at:(now+Duration::days(7)).to_rfc3339(),
+          users:vec![ProvisionUser{id:Uuid::new_v4().to_string(),username:"user-a".into(),password_hash:hash(),display_name:"User A".into(),
+            role_code:"VIEWER".into(),permissions:vec!["dashboard.view".into()],scopes:vec![ProvisionScope{scope_type:"GLOBAL".into(),company_id:None,department_id:None}]}]}
+    }
+    fn test_signing_key()->SigningKey{
+        let b=B64.decode(TEST_PRIVATE_B64).unwrap();let a:[u8;32]=b.try_into().unwrap();SigningKey::from_bytes(&a)
+    }
+    fn envelope_for_payload(payload:&[u8],key_id:&str,sk:&SigningKey)->String{
+        let mut msg=trust::DOMAIN_PREFIX.to_vec();msg.extend_from_slice(payload);
+        serde_json::to_string(&ProvisionEnvelope{format:PACKAGE_FORMAT.into(),key_id:key_id.into(),payload_b64:B64.encode(payload),signature_b64:B64.encode(sk.sign(&msg).to_bytes())}).unwrap()
+    }
+    fn signed(p:&ProvisionManifest)->String{envelope_for_payload(&serde_json::to_vec(p).unwrap(),TEST_KEY_ID,&test_signing_key())}
+    fn rejected(p:&ProvisionManifest,site:Option<&str>)->bool{decode_verified(&signed(p),site,Utc::now()).is_err()}
+
+    #[test] fn attack_01_signed_system_admin_role_rejected(){let mut p=manifest();p.users[0].role_code="SYSTEM_ADMIN".into();assert!(rejected(&p,None));}
+    #[test] fn attack_02_signed_user_manage_permission_rejected(){let mut p=manifest();p.users[0].permissions.push("user.manage".into());assert!(rejected(&p,None));}
+    #[test] fn attack_03_signed_plaintext_password_hash_rejected(){let mut p=manifest();p.users[0].password_hash="password123".into();assert!(rejected(&p,None));}
+    #[test] fn attack_04_signed_argon2i_rejected(){let mut p=manifest();p.users[0].password_hash=p.users[0].password_hash.replacen("$argon2id$","$argon2i$",1);assert!(rejected(&p,None));}
+    #[test] fn attack_05_signed_wrong_target_site_rejected(){assert!(rejected(&manifest(),Some("SITE-B")));}
+    #[test] fn attack_06_signed_expired_rejected(){let mut p=manifest();p.issued_at=(Utc::now()-Duration::days(3)).to_rfc3339();p.expires_at=(Utc::now()-Duration::days(1)).to_rfc3339();assert!(rejected(&p,None));}
+    #[test] fn attack_07_signed_future_clock_rejected(){let mut p=manifest();p.issued_at=(Utc::now()+Duration::hours(1)).to_rfc3339();p.expires_at=(Utc::now()+Duration::days(2)).to_rfc3339();assert!(rejected(&p,None));}
+    #[test] fn attack_08_signed_over_30_days_rejected(){let mut p=manifest();p.expires_at=(Utc::now()+Duration::days(31)).to_rfc3339();assert!(rejected(&p,None));}
+    #[test] fn attack_09_signed_under_1_day_rejected(){let mut p=manifest();p.expires_at=(Utc::now()+Duration::hours(12)).to_rfc3339();assert!(rejected(&p,None));}
+    #[test] fn attack_10_signed_wrong_edition_rejected(){let mut p=manifest();p.target_edition="CENTRAL".into();assert!(rejected(&p,None));}
+    #[test] fn attack_11_signed_wrong_environment_rejected(){let mut p=manifest();p.key_env="PRODUCTION".into();assert!(rejected(&p,None));}
+    #[test] fn attack_12_signed_invalid_scope_rejected(){let mut p=manifest();p.users[0].scopes[0]=ProvisionScope{scope_type:"COMPANY".into(),company_id:None,department_id:None};assert!(rejected(&p,None));}
     #[test] fn attack_13_oversized_envelope_rejected(){let huge="x".repeat(MAX_PACKAGE_BYTES+1);assert!(decode_verified(&huge,None,Utc::now()).is_err());}
-    #[test] fn attack_14_tampered_payload_signature_rejected(){
-        let sk=SigningKey::generate(&mut OsRng);let payload=b"payload-a";let mut msg=trust::DOMAIN_PREFIX.to_vec();msg.extend_from_slice(payload);
-        let sig=sk.sign(&msg);let pk=B64.encode(sk.verifying_key().to_bytes());let sb=B64.encode(sig.to_bytes());
-        assert!(trust::verify_with_public_key_for_test(&pk,&sb,b"payload-b").is_err());
+    #[test] fn attack_14_tampered_payload_with_original_signature_rejected(){
+        let good=manifest();let env:ProvisionEnvelope=serde_json::from_str(&signed(&good)).unwrap();
+        let mut payload=B64.decode(&env.payload_b64).unwrap();payload[0]^=1;
+        let tampered=serde_json::to_string(&ProvisionEnvelope{payload_b64:B64.encode(payload),..env}).unwrap();
+        assert!(decode_verified(&tampered,None,Utc::now()).is_err());
+    }
+    #[test] fn attacker_key_with_real_key_id_rejected(){
+        let attacker=SigningKey::generate(&mut OsRng);let payload=serde_json::to_vec(&manifest()).unwrap();
+        assert!(decode_verified(&envelope_for_payload(&payload,TEST_KEY_ID,&attacker),None,Utc::now()).is_err());
+    }
+    #[test] fn attacker_own_key_id_rejected(){
+        let attacker=SigningKey::generate(&mut OsRng);let payload=serde_json::to_vec(&manifest()).unwrap();
+        assert!(decode_verified(&envelope_for_payload(&payload,"attacker-key",&attacker),None,Utc::now()).is_err());
+    }
+    #[test] fn signed_unknown_password_field_rejected(){
+        let mut v=serde_json::to_value(manifest()).unwrap();v["users"][0]["password"]=json!("plaintext");
+        let payload=serde_json::to_vec(&v).unwrap();assert!(decode_verified(&envelope_for_payload(&payload,TEST_KEY_ID,&test_signing_key()),None,Utc::now()).is_err());
+    }
+    #[test] fn signed_unknown_manifest_field_rejected(){
+        let mut v=serde_json::to_value(manifest()).unwrap();v["unexpected"]=json!(true);
+        let payload=serde_json::to_vec(&v).unwrap();assert!(decode_verified(&envelope_for_payload(&payload,TEST_KEY_ID,&test_signing_key()),None,Utc::now()).is_err());
+    }
+    #[test] fn unknown_envelope_field_rejected(){
+        let mut v:Value=serde_json::from_str(&signed(&manifest())).unwrap();v["public_key_b64"]=json!("attacker");
+        assert!(decode_verified(&serde_json::to_string(&v).unwrap(),None,Utc::now()).is_err());
+    }
+    #[test] fn correctly_signed_test_envelope_is_accepted(){assert!(decode_verified(&signed(&manifest()),Some("SITE-A"),Utc::now()).is_ok());}
+    #[test] fn legacy_trusted_package_keys_cannot_supply_attacker_key(){
+        let source=include_str!("packages.rs");
+        assert!(!source.contains("SELECT public_key_b64 FROM trusted_package_keys"));
+        assert!(!source.contains("INSERT INTO trusted_package_keys"));
     }
 }
