@@ -253,7 +253,7 @@ pub fn install_signing_key(app:&AppHandle,user_id:&str,key_json:&str)->Result<()
 pub fn signing_key_status(app: &AppHandle, user_id: &str) -> Result<SigningKeyStatus, String> {
     if !edition::is_central(app)? { return Err("Signing Key Status ใช้ได้เฉพาะ Central Edition".into()); }
     let c = db::open(app)?;
-    if !is_system_admin(c, user_id)? { return Err("เฉพาะ SYSTEM_ADMIN เท่านั้นที่ดู Signing Key Status ได้".into()); }
+    if !is_system_admin(&c, user_id)? { return Err("เฉพาะ SYSTEM_ADMIN เท่านั้นที่ดู Signing Key Status ได้".into()); }
     let row = c.query_row(
         "SELECT key_id,key_env FROM central_signing_keys WHERE is_active=1 ORDER BY installed_at DESC LIMIT 1",
         [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
