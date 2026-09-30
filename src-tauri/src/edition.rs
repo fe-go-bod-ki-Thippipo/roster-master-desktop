@@ -22,11 +22,11 @@ pub fn identity(app:&AppHandle)->Result<Option<AppIdentity>,String>{
  }
 }
 
+fn validate_identity_edition(identity_edition:&str,build:&str)->Result<(),String>{
+ if identity_edition!=build{return Err(format!("ฐานข้อมูล Edition {} ไม่ตรงกับโปรแกรม {} build",identity_edition,build))} Ok(())
+}
 pub fn ensure_build_matches_identity(app:&AppHandle)->Result<(),String>{
- if let Some(i)=identity(app)? {
-   if i.edition != build_edition(){return Err(format!("ฐานข้อมูล Edition {} ไม่ตรงกับโปรแกรม {} build",i.edition,build_edition()))}
- }
- Ok(())
+ if let Some(i)=identity(app)? {validate_identity_edition(&i.edition,build_edition())?;} Ok(())
 }
 
 pub fn initialize_central(app:&AppHandle,site_code:&str,site_name:&str)->Result<(),String>{
@@ -38,3 +38,15 @@ pub fn initialize_central(app:&AppHandle,site_code:&str,site_name:&str)->Result<
 }
 
 pub fn is_central(app:&AppHandle)->Result<bool,String>{Ok(identity(app)?.map(|x|x.edition=="CENTRAL").unwrap_or(false))}
+
+
+#[cfg(test)]
+mod tests{
+ use super::*;
+ #[test] fn edition_mismatch_is_rejected(){
+   assert!(validate_identity_edition("CENTRAL","UNIT").is_err());
+   assert!(validate_identity_edition("UNIT","CENTRAL").is_err());
+   assert!(validate_identity_edition("UNIT","UNIT").is_ok());
+   assert!(validate_identity_edition("CENTRAL","CENTRAL").is_ok());
+ }
+}
