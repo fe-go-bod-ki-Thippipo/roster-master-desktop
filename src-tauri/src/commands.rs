@@ -6,6 +6,8 @@ use crate::{auth,db,edition,session::{LoginLimiter,SessionStore}};
 pub struct DashboardSummary { pub employees:i64, pub target_hc:f64, pub fte:f64, pub vacancies:f64 }
 
 #[tauri::command] pub fn app_identity(app:AppHandle)->Result<Option<edition::AppIdentity>,String>{edition::identity(&app)}
+#[tauri::command] pub fn build_edition()->String{edition::build_edition().into()}
+#[tauri::command] pub fn inspect_provision_package(package_json:String)->Result<crate::packages::ProvisionInspection,String>{crate::packages::inspect_provision(&package_json)}
 #[cfg(feature="central")]
 #[tauri::command] pub fn initialize_central(app:AppHandle,site_code:String,site_name:String)->Result<(),String>{edition::initialize_central(&app,&site_code,&site_name)}
 #[tauri::command] pub fn needs_setup(app:AppHandle)->Result<bool,String>{auth::needs_setup(&app)}
@@ -44,6 +46,10 @@ pub fn dashboard_summary(app:AppHandle,store:State<SessionStore>,token:String)->
 #[cfg(feature="central")]
 #[tauri::command] pub fn create_managed_user(app:AppHandle,store:State<SessionStore>,token:String,input:crate::admin::CreateUserInput)->Result<(),String>{let user_id=auth::resolve_active(&app,&store,&token)?;crate::admin::create(&app,&user_id,input)}
 #[cfg(feature="central")]
-#[tauri::command] pub fn export_provision_package(app:AppHandle,store:State<SessionStore>,token:String,target_site_code:String,target_site_name:String,user_ids:Vec<String>)->Result<String,String>{let user_id=auth::resolve_active(&app,&store,&token)?;crate::packages::export_provision(&app,&user_id,&target_site_code,&target_site_name,user_ids)}
+#[tauri::command] pub fn install_signing_key(app:AppHandle,store:State<SessionStore>,token:String,key_json:String)->Result<(),String>{let user_id=auth::resolve_active(&app,&store,&token)?;crate::packages::install_signing_key(&app,&user_id,&key_json)}
+#[cfg(feature="central")]
+#[tauri::command] pub fn signing_key_status(app:AppHandle,store:State<SessionStore>,token:String)->Result<crate::packages::SigningKeyStatus,String>{let user_id=auth::resolve_active(&app,&store,&token)?;crate::packages::signing_key_status(&app,&user_id)}
+#[cfg(feature="central")]
+#[tauri::command] pub fn export_provision_package(app:AppHandle,store:State<SessionStore>,token:String,target_site_code:String,target_site_name:String,user_ids:Vec<String>,valid_days:i64)->Result<String,String>{let user_id=auth::resolve_active(&app,&store,&token)?;crate::packages::export_provision(&app,&user_id,&target_site_code,&target_site_name,user_ids,valid_days)}
 #[cfg(feature="unit")]
-#[tauri::command] pub fn import_provision_package(app:AppHandle,package_json:String)->Result<(),String>{crate::packages::import_provision(&app,&package_json)}
+#[tauri::command] pub fn import_provision_package(app:AppHandle,package_json:String,expected_site_code:String)->Result<(),String>{crate::packages::import_provision(&app,&package_json,&expected_site_code)}
