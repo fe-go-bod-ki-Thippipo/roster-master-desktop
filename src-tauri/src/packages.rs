@@ -268,7 +268,7 @@ pub fn export_provision(app: &AppHandle, user_id: &str, target_site_code: &str, 
     for uid in user_ids {
         let (id, username, password_hash, display_name) = c.query_row(
             "SELECT id,username,password_hash,display_name FROM users WHERE id=?1 AND is_active=1",
-            [&uid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            [&uid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)),
         ).map_err(|_| "ไม่พบผู้ใช้ที่ใช้งานอยู่".to_string())?;
         validate_hash(&password_hash)?;
         let roles: Vec<String> = {
