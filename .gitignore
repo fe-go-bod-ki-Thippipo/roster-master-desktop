@@ -7,3 +7,6 @@ target/
 .env
 .env.*
 !.env.example
+
+# Offline signing material
+*.rmkey
