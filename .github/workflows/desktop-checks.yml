@@ -16,6 +16,14 @@ jobs:
         with:
           node-version: 22
       - uses: dtolnay/rust-toolchain@stable
+      - name: Assert test trust key is not shipped as ALPHA
+        shell: pwsh
+        run: |
+          $alpha = Get-Content src-tauri/trust/alpha_central_keys.json -Raw
+          $test = Get-Content src-tauri/trust/test_central_keys.json -Raw | ConvertFrom-Json
+          foreach ($k in $test) {
+            if ($alpha -match [regex]::Escape($k.key_id)) { throw "TEST key_id leaked into alpha_central_keys.json: $($k.key_id)" }
+          }
       - run: npm ci
       - run: npm run build
       - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features ${{ matrix.edition }}
