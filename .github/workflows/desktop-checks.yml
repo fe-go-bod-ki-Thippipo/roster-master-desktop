@@ -23,6 +23,7 @@ jobs:
           $test = Get-Content src-tauri/trust/test_central_keys.json -Raw | ConvertFrom-Json
           foreach ($k in $test) {
             if ($alpha -match [regex]::Escape($k.key_id)) { throw "TEST key_id leaked into alpha_central_keys.json: $($k.key_id)" }
+            if ($alpha -match [regex]::Escape($k.public_key_b64)) { throw "TEST public key leaked into alpha_central_keys.json: $($k.key_id)" }
           }
       - run: npm ci
       - run: npm run build
