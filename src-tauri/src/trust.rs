@@ -1,6 +1,7 @@
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 pub const DOMAIN_PREFIX: &[u8] = b"RMPKG-PROVISION-v1\0";
 
@@ -12,13 +13,20 @@ const ALPHA_KEYS_JSON:&str=include_str!("../trust/alpha_central_keys.json");
 #[cfg(test)]
 const TEST_KEYS_JSON:&str=include_str!("../trust/test_central_keys.json");
 
+fn validate_key(k:&EmbeddedKey)->Result<(),String>{
+ let pb=B64.decode(&k.public_key_b64).map_err(|_|"Embedded public key ไม่ถูกต้อง")?;
+ let pa:[u8;32]=pb.try_into().map_err(|_|"Embedded public key length ไม่ถูกต้อง")?;
+ VerifyingKey::from_bytes(&pa).map_err(|_|"Embedded public key ไม่ถูกต้อง")?;
+ let digest=Sha256::digest(pa);let derived=digest[..8].iter().map(|b|format!("{b:02x}")).collect::<String>();
+ if derived!=k.key_id{return Err("Embedded key_id ไม่ตรงกับ SHA-256 ของ public key".into())} Ok(())
+}
 pub fn embedded_keys()->Result<Vec<EmbeddedKey>,String>{
  let mut keys:Vec<EmbeddedKey>=serde_json::from_str(ALPHA_KEYS_JSON).map_err(|_|"Embedded trust anchor ไม่ถูกต้อง".to_string())?;
  #[cfg(test)] {
    let mut test:Vec<EmbeddedKey>=serde_json::from_str(TEST_KEYS_JSON).map_err(|_|"Test trust anchor ไม่ถูกต้อง".to_string())?;
    keys.append(&mut test);
  }
- Ok(keys)
+ for k in &keys{validate_key(k)?;} Ok(keys)
 }
 pub fn trusted_key(key_id:&str)->Result<EmbeddedKey,String>{embedded_keys()?.into_iter().find(|k|k.key_id==key_id).ok_or_else(||"Package ลงนามด้วย key_id ที่ Unit ไม่เชื่อถือ".into())}
 fn verify_with_public_key(public_key_b64:&str,signature_b64:&str,payload:&[u8])->Result<(),String>{
