@@ -492,9 +492,9 @@ mod tests {
     fn seed_central()->rusqlite::Connection{
         let c=migrated_db();let h=hash();
         c.execute("INSERT INTO users(id,username,password_hash,display_name,is_active,created_at,updated_at) VALUES('admin','admin',?1,'Admin',1,'now','now'),('hr','hruser',?1,'HR',1,'now','now'),('viewer','viewer',?1,'Viewer',1,'now','now')",[&h]).unwrap();
-        c.execute_batch("INSERT INTO roles(id,code,name) VALUES('ra','SYSTEM_ADMIN','SYSTEM_ADMIN'),('rh','CENTRAL_HR','CENTRAL_HR'),('rv','VIEWER','VIEWER');
+        c.execute_batch("INSERT INTO roles(id,code,name) VALUES('ra','SYSTEM_ADMIN','SYSTEM_ADMIN'),('rh','CENTRAL_HR','CENTRAL_HR'),('rv','VIEWER','VIEWER'),('re','EXPORTER','EXPORTER');
           INSERT INTO permissions(id,code,name) VALUES('pu','user.manage','user.manage'),('pd','dashboard.view','dashboard.view');
-          INSERT INTO role_permissions(role_id,permission_id) VALUES('ra','pu'),('rh','pu'),('rv','pd');
+          INSERT INTO role_permissions(role_id,permission_id) VALUES('ra','pu'),('rv','pd'),('re','pu');
           INSERT INTO user_roles(user_id,role_id) VALUES('admin','ra'),('hr','rh'),('viewer','rv');
           INSERT INTO user_data_scopes(id,user_id,scope_type) VALUES('sv','viewer','GLOBAL');").unwrap();c
     }
@@ -526,7 +526,19 @@ mod tests {
     #[cfg(feature="central")]
     #[test] fn c5_production_key_rejected(){let c=seed_central();assert!(install_signing_key_core(&c,"admin",&test_key_json("PRODUCTION",None)).is_err());}
     #[cfg(feature="central")]
-    #[test] fn c6_central_hr_export_rejected(){let c=seed_central();assert!(export_provision_core(&c,"hr","CENTRAL","SITE-A","Site A",vec!["viewer".into()],7).is_err());}
+    #[test] fn c6_central_hr_export_rejected_for_permission(){
+        let c=seed_central();install_signing_key_core(&c,"admin",&test_key_json("ALPHA",None)).unwrap();
+        let e=export_provision_core(&c,"hr","CENTRAL","SITE-A","Site A",vec!["viewer".into()],7).unwrap_err();
+        assert_eq!(e,"ไม่มีสิทธิ์สร้าง Package");
+    }
+    #[cfg(feature="central")]
+    #[test] fn c6_control_non_admin_with_user_manage_can_export(){
+        let c=seed_central();install_signing_key_core(&c,"admin",&test_key_json("ALPHA",None)).unwrap();
+        c.execute("INSERT INTO users(id,username,password_hash,display_name,is_active,created_at,updated_at) VALUES('exporter','exporter',?1,'Exporter',1,'now','now')",[hash()]).unwrap();
+        c.execute("INSERT INTO user_roles(user_id,role_id) VALUES('exporter','re')",[]).unwrap();
+        let blob=export_provision_core(&c,"exporter","CENTRAL","SITE-A","Site A",vec!["viewer".into()],7).unwrap();
+        assert!(decode_verified(&blob,Some("SITE-A"),Utc::now()).is_ok());
+    }
     #[cfg(feature="central")]
     #[test] fn c7_system_admin_cannot_be_exported(){
         let c=seed_central();install_signing_key_core(&c,"admin",&test_key_json("ALPHA",None)).unwrap();
