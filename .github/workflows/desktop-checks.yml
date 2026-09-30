@@ -3,6 +3,7 @@ on:
   pull_request:
   push:
     branches: [feature/bootstrap-desktop-architecture]
+
 jobs:
   check:
     runs-on: windows-latest
@@ -18,3 +19,25 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features ${{ matrix.edition }}
+
+  build-alpha:
+    runs-on: windows-latest
+    needs: check
+    strategy:
+      matrix:
+        edition: [central, unit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - name: Build Windows Alpha
+        run: npm run tauri:build:${{ matrix.edition }}
+      - name: Upload Windows bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: roster-master-${{ matrix.edition }}-windows-alpha
+          path: src-tauri/target/release/bundle/**
+          if-no-files-found: error
