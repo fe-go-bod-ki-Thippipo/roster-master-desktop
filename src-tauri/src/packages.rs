@@ -82,6 +82,14 @@ pub struct ProvisionInspection {
     pub key_env: String,
     pub user_count: usize,
     pub usernames: Vec<String>,
+    pub users: Vec<ProvisionInspectionUser>,
+}
+#[derive(Debug, Serialize)]
+pub struct ProvisionInspectionUser {
+    pub username: String,
+    pub role_code: String,
+    pub permissions: Vec<String>,
+    pub scopes: Vec<ProvisionScope>,
 }
 
 #[derive(Debug, Serialize)]
@@ -337,7 +345,8 @@ pub fn inspect_provision(json: &str) -> Result<ProvisionInspection, String> {
         package_id: p.package_id, source_site_code: p.source_site_code, target_site_code: p.target_site_code,
         target_site_name: p.target_site_name, issued_at: p.issued_at, expires_at: p.expires_at,
         key_id: envelope.key_id, key_env: p.key_env, user_count: p.users.len(),
-        usernames: p.users.into_iter().map(|u| u.username).collect(),
+        usernames: p.users.iter().map(|u| u.username.clone()).collect(),
+        users: p.users.into_iter().map(|u| ProvisionInspectionUser { username:u.username, role_code:u.role_code, permissions:u.permissions, scopes:u.scopes }).collect(),
     })
 }
 
