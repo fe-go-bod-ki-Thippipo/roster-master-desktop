@@ -213,11 +213,9 @@ fn decode_verified(json: &str, expected_site_code: Option<&str>, now: DateTime<U
 }
 
 #[cfg(feature = "central")]
-pub fn install_signing_key(app: &AppHandle, user_id: &str, key_json: &str) -> Result<(), String> {
-    if !edition::is_central(app)? { return Err("ติดตั้ง Signing Key ได้เฉพาะ Central Edition".into()); }
+fn install_signing_key_core(c:&rusqlite::Connection,user_id:&str,key_json:&str)->Result<(),String>{
     if key_json.as_bytes().len() > 64 * 1024 { return Err("Signing key file ใหญ่ผิดปกติ".into()); }
-    let c = db::open(app)?;
-    if !is_system_admin(&c, user_id)? { return Err("เฉพาะ SYSTEM_ADMIN เท่านั้นที่ติดตั้ง Signing Key ได้".into()); }
+    if !is_system_admin(c, user_id)? { return Err("เฉพาะ SYSTEM_ADMIN เท่านั้นที่ติดตั้ง Signing Key ได้".into()); }
     let file: SigningKeyFile = serde_json::from_str(key_json).map_err(|_| "ไฟล์ .rmkey ไม่ถูกต้อง".to_string())?;
     if file.env != KEY_ENV { return Err("รอบ Alpha รับเฉพาะ ALPHA signing key".into()); }
     let trusted = trust::trusted_key(&file.key_id)?;
@@ -247,10 +245,15 @@ pub fn install_signing_key(app: &AppHandle, user_id: &str, key_json: &str) -> Re
 }
 
 #[cfg(feature = "central")]
+pub fn install_signing_key(app:&AppHandle,user_id:&str,key_json:&str)->Result<(),String>{
+    if !edition::is_central(app)? { return Err("ติดตั้ง Signing Key ได้เฉพาะ Central Edition".into()); }
+    let c=db::open(app)?;install_signing_key_core(&c,user_id,key_json)
+}
+#[cfg(feature = "central")]
 pub fn signing_key_status(app: &AppHandle, user_id: &str) -> Result<SigningKeyStatus, String> {
     if !edition::is_central(app)? { return Err("Signing Key Status ใช้ได้เฉพาะ Central Edition".into()); }
     let c = db::open(app)?;
-    if !is_system_admin(&c, user_id)? { return Err("เฉพาะ SYSTEM_ADMIN เท่านั้นที่ดู Signing Key Status ได้".into()); }
+    if !is_system_admin(c, user_id)? { return Err("เฉพาะ SYSTEM_ADMIN เท่านั้นที่ดู Signing Key Status ได้".into()); }
     let row = c.query_row(
         "SELECT key_id,key_env FROM central_signing_keys WHERE is_active=1 ORDER BY installed_at DESC LIMIT 1",
         [], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
@@ -262,15 +265,12 @@ pub fn signing_key_status(app: &AppHandle, user_id: &str) -> Result<SigningKeySt
 }
 
 #[cfg(feature = "central")]
-pub fn export_provision(app: &AppHandle, user_id: &str, target_site_code: &str, target_site_name: &str, user_ids: Vec<String>, valid_days: i64) -> Result<String, String> {
-    if !edition::is_central(app)? { return Err("สร้าง Package ได้เฉพาะ Central Edition".into()); }
+fn export_provision_core(c:&rusqlite::Connection,user_id:&str,source:&str,target_site_code:&str,target_site_name:&str,user_ids:Vec<String>,valid_days:i64)->Result<String,String>{
     if target_site_code.trim().is_empty() || target_site_name.trim().is_empty() || user_ids.is_empty() {
         return Err("ต้องระบุ Site ปลายทาง ชื่อ Site และผู้ใช้อย่างน้อย 1 ราย".into());
     }
     if !(1..=30).contains(&valid_days) { return Err("อายุ Package ต้องอยู่ระหว่าง 1–30 วัน".into()); }
-    let c = db::open(app)?;
-    if !has_permission(&c, user_id, "user.manage")? { return Err("ไม่มีสิทธิ์สร้าง Package".into()); }
-    let source = edition::identity(app)?.and_then(|x| x.site_code).ok_or("Central Site ยังไม่สมบูรณ์")?;
+    if !has_permission(c, user_id, "user.manage")? { return Err("ไม่มีสิทธิ์สร้าง Package".into()); }
 
     let mut users = Vec::new();
     let mut seen_user_ids = std::collections::HashSet::new();
@@ -321,7 +321,7 @@ pub fn export_provision(app: &AppHandle, user_id: &str, target_site_code: &str, 
     let issued = Utc::now();
     let manifest = ProvisionManifest {
         schema_version: 2, package_type: PACKAGE_TYPE.into(), key_env: KEY_ENV.into(), target_edition: TARGET_EDITION.into(),
-        package_id: Uuid::new_v4().to_string(), source_site_code: source, target_site_code: target_site_code.trim().into(),
+        package_id: Uuid::new_v4().to_string(), source_site_code: source.into(), target_site_code: target_site_code.trim().into(),
         target_site_name: target_site_name.trim().into(), issued_at: issued.to_rfc3339(),
         expires_at: (issued + Duration::days(valid_days)).to_rfc3339(), users,
     };
@@ -335,8 +335,16 @@ pub fn export_provision(app: &AppHandle, user_id: &str, target_site_code: &str, 
     let signature = sk.sign(&message);
     let envelope = ProvisionEnvelope { format: PACKAGE_FORMAT.into(), key_id, payload_b64: B64.encode(&payload), signature_b64: B64.encode(signature.to_bytes()) };
     let json = serde_json::to_string_pretty(&envelope).map_err(|e| e.to_string())?;
-    audit::write(&c, user_id, "EXPORT", "PROVISION_PACKAGE", &manifest.package_id, None, Some(&format!(r#"{{"target_site_code":"{}","users":{}}}"#, manifest.target_site_code, manifest.users.len())))?;
+    audit::write(c, user_id, "EXPORT", "PROVISION_PACKAGE", &manifest.package_id, None, Some(&format!(r#"{{"target_site_code":"{}","users":{}}}"#, manifest.target_site_code, manifest.users.len())))?;
     Ok(json)
+}
+
+#[cfg(feature = "central")]
+pub fn export_provision(app:&AppHandle,user_id:&str,target_site_code:&str,target_site_name:&str,user_ids:Vec<String>,valid_days:i64)->Result<String,String>{
+    if !edition::is_central(app)? { return Err("สร้าง Package ได้เฉพาะ Central Edition".into()); }
+    let c=db::open(app)?;
+    let source=edition::identity(app)?.and_then(|x|x.site_code).ok_or("Central Site ยังไม่สมบูรณ์")?;
+    export_provision_core(&c,user_id,&source,target_site_code,target_site_name,user_ids,valid_days)
 }
 
 pub fn inspect_provision(json: &str) -> Result<ProvisionInspection, String> {
