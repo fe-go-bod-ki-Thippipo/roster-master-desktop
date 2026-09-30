@@ -1,0 +1,53 @@
+name: Desktop checks
+on:
+  pull_request:
+  push:
+    branches: [feature/bootstrap-desktop-architecture]
+
+jobs:
+  check:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        edition: [central, unit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Assert test trust key is not shipped as ALPHA
+        shell: pwsh
+        run: |
+          $alpha = Get-Content src-tauri/trust/alpha_central_keys.json -Raw
+          $test = Get-Content src-tauri/trust/test_central_keys.json -Raw | ConvertFrom-Json
+          foreach ($k in $test) {
+            if ($alpha -match [regex]::Escape($k.key_id)) { throw "TEST key_id leaked into alpha_central_keys.json: $($k.key_id)" }
+            if ($alpha -match [regex]::Escape($k.public_key_b64)) { throw "TEST public key leaked into alpha_central_keys.json: $($k.key_id)" }
+          }
+      - run: npm ci
+      - run: npm run build
+      - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features ${{ matrix.edition }}
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --features ${{ matrix.edition }}
+
+  build-alpha:
+    runs-on: windows-latest
+    needs: check
+    strategy:
+      matrix:
+        edition: [central, unit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - name: Build Windows Alpha
+        run: npm run tauri:build:${{ matrix.edition }}
+      - name: Upload Windows bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: roster-master-${{ matrix.edition }}-windows-alpha
+          path: src-tauri/target/release/bundle/**
+          if-no-files-found: error

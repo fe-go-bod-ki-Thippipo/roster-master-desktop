@@ -1,0 +1,30 @@
+[package]
+name = "roster-master-desktop"
+version = "0.1.0"
+description = "Offline-first HR workforce management desktop application"
+edition = "2021"
+
+[lib]
+name = "roster_master_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+default = []
+central = []
+unit = []
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+argon2 = "0.5"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+base64 = "0.22"
+sha2 = "0.10"
