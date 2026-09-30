@@ -458,12 +458,14 @@ mod tests {
         assert!(decode_verified(&serde_json::to_string(&v).unwrap(),None,Utc::now()).is_err());
     }
     #[test] fn correctly_signed_test_envelope_is_accepted(){assert!(decode_verified(&signed(&manifest()),Some("SITE-A"),Utc::now()).is_ok());}
+    #[cfg(feature="unit")]
     #[test] fn legacy_trusted_package_keys_cannot_supply_attacker_key(){
-        let source=include_str!("packages.rs");
-        let forbidden_select=["SELECT public_key_b64 FROM trusted_","package_keys"].concat();
-        let forbidden_insert=["INSERT INTO trusted_","package_keys"].concat();
-        assert!(!source.contains(&forbidden_select));
-        assert!(!source.contains(&forbidden_insert));
+        let c=unit_db();let attacker=SigningKey::generate(&mut OsRng);
+        let public=B64.encode(attacker.verifying_key().to_bytes());let attacker_id="attacker-db-key";
+        c.execute("INSERT INTO trusted_package_keys(id,key_id,public_key_b64,installed_at,is_active) VALUES('evil',?1,?2,'now',1)",params![attacker_id,public]).unwrap();
+        let payload=serde_json::to_vec(&manifest()).unwrap();
+        let package=envelope_for_payload(&payload,attacker_id,&attacker);
+        assert!(decode_verified(&package,None,Utc::now()).is_err());
     }
 
     #[cfg(feature="unit")]
