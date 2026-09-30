@@ -476,9 +476,9 @@ mod tests {
         assert!(decode_verified(&package,None,Utc::now()).is_err());
     }
 
-    #[cfg(feature="unit")]
-    fn unit_db()->rusqlite::Connection{
-        let mut c=rusqlite::Connection::open_in_memory().unwrap();
+
+    fn migrated_db()->rusqlite::Connection{
+        let c=rusqlite::Connection::open_in_memory().unwrap();
         for sql in [
             include_str!("../../database/migrations/0001_security.sql"),
             include_str!("../../database/migrations/0002_hr_domain.sql"),
@@ -486,9 +486,64 @@ mod tests {
             include_str!("../../database/migrations/0004_package_signing.sql"),
             include_str!("../../database/migrations/0005_scope_constraints.sql"),
             include_str!("../../database/migrations/0006_central_signing_keys.sql"),
-        ]{c.execute_batch(sql).unwrap();}
-        c
+        ]{c.execute_batch(sql).unwrap();} c
     }
+    #[cfg(feature="central")]
+    fn seed_central()->rusqlite::Connection{
+        let c=migrated_db();let h=hash();
+        c.execute("INSERT INTO users(id,username,password_hash,display_name,is_active,created_at,updated_at) VALUES('admin','admin',?1,'Admin',1,'now','now'),('hr','hruser',?1,'HR',1,'now','now'),('viewer','viewer',?1,'Viewer',1,'now','now')",[&h]).unwrap();
+        c.execute_batch("INSERT INTO roles(id,code,name) VALUES('ra','SYSTEM_ADMIN','SYSTEM_ADMIN'),('rh','CENTRAL_HR','CENTRAL_HR'),('rv','VIEWER','VIEWER');
+          INSERT INTO permissions(id,code,name) VALUES('pu','user.manage','user.manage'),('pd','dashboard.view','dashboard.view');
+          INSERT INTO role_permissions(role_id,permission_id) VALUES('ra','pu'),('rh','pu'),('rv','pd');
+          INSERT INTO user_roles(user_id,role_id) VALUES('admin','ra'),('hr','rh'),('viewer','rv');
+          INSERT INTO user_data_scopes(id,user_id,scope_type) VALUES('sv','viewer','GLOBAL');").unwrap();c
+    }
+    #[cfg(feature="central")]
+    fn test_key_json(env:&str,private_override:Option<&str>)->String{
+        let sk=test_signing_key();serde_json::json!({"key_id":TEST_KEY_ID,"env":env,
+          "private_key_b64":private_override.unwrap_or(TEST_PRIVATE_B64),"public_key_b64":B64.encode(sk.verifying_key().to_bytes())}).to_string()
+    }
+    #[cfg(feature="central")]
+    #[test] fn c1_export_without_key_rejected_and_does_not_generate_key(){
+        let c=seed_central();let e=export_provision_core(&c,"admin","CENTRAL","SITE-A","Site A",vec!["viewer".into()],7).unwrap_err();
+        assert!(e.contains("Signing Key"));let n:i64=c.query_row("SELECT COUNT(*) FROM central_signing_keys",[],|r|r.get(0)).unwrap();assert_eq!(n,0);
+        let legacy:i64=c.query_row("SELECT COUNT(*) FROM package_signing_keys",[],|r|r.get(0)).unwrap();assert_eq!(legacy,0);
+    }
+    #[cfg(feature="central")]
+    #[test] fn c2_non_system_admin_cannot_install_key(){let c=seed_central();assert!(install_signing_key_core(&c,"hr",&test_key_json("ALPHA",None)).is_err());}
+    #[cfg(feature="central")]
+    #[test] fn c3_untrusted_key_rejected(){
+        let c=seed_central();let attacker=SigningKey::generate(&mut OsRng);let pb=B64.encode(attacker.verifying_key().to_bytes());
+        let digest=Sha256::digest(attacker.verifying_key().to_bytes());let id=digest[..8].iter().map(|b|format!("{b:02x}")).collect::<String>();
+        let k=json!({"key_id":id,"env":"ALPHA","private_key_b64":B64.encode(attacker.to_bytes()),"public_key_b64":pb}).to_string();
+        assert!(install_signing_key_core(&c,"admin",&k).is_err());
+    }
+    #[cfg(feature="central")]
+    #[test] fn c4_wrong_private_public_pair_rejected(){
+        let c=seed_central();let attacker=SigningKey::generate(&mut OsRng);
+        assert!(install_signing_key_core(&c,"admin",&test_key_json("ALPHA",Some(&B64.encode(attacker.to_bytes())))).is_err());
+    }
+    #[cfg(feature="central")]
+    #[test] fn c5_production_key_rejected(){let c=seed_central();assert!(install_signing_key_core(&c,"admin",&test_key_json("PRODUCTION",None)).is_err());}
+    #[cfg(feature="central")]
+    #[test] fn c6_central_hr_export_rejected(){let c=seed_central();assert!(export_provision_core(&c,"hr","CENTRAL","SITE-A","Site A",vec!["viewer".into()],7).is_err());}
+    #[cfg(feature="central")]
+    #[test] fn c7_system_admin_cannot_be_exported(){
+        let c=seed_central();install_signing_key_core(&c,"admin",&test_key_json("ALPHA",None)).unwrap();
+        assert!(export_provision_core(&c,"admin","CENTRAL","SITE-A","Site A",vec!["admin".into()],7).is_err());
+    }
+    #[cfg(feature="central")]
+    #[test] fn c8_valid_days_over_30_rejected(){let c=seed_central();assert!(export_provision_core(&c,"admin","CENTRAL","SITE-A","Site A",vec!["viewer".into()],31).is_err());}
+    #[cfg(feature="central")]
+    #[test] fn c9_valid_export_is_signed_deduped_and_contains_no_plaintext_password(){
+        let c=seed_central();install_signing_key_core(&c,"admin",&test_key_json("ALPHA",None)).unwrap();
+        let blob=export_provision_core(&c,"admin","CENTRAL","SITE-A","Site A",vec!["viewer".into(),"viewer".into()],7).unwrap();
+        assert!(!blob.contains("alpha-test-password"));let (_,p)=decode_verified(&blob,Some("SITE-A"),Utc::now()).unwrap();assert_eq!(p.users.len(),1);
+    }
+
+    #[cfg(feature="unit")]
+    fn unit_db()->rusqlite::Connection{migrated_db()}
+
     #[cfg(feature="unit")]
     #[test] fn import_signed_happy_path_persists_unit_identity_and_argon2_login_material(){
         use argon2::PasswordVerifier;
