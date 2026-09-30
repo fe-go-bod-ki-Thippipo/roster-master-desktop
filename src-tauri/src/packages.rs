@@ -370,8 +370,6 @@ fn import_verified_manifest(conn: &mut rusqlite::Connection, p: &ProvisionManife
     tx.commit().map_err(|e| e.to_string())
 }
 
-}
-
 #[cfg(feature = "unit")]
 pub fn import_provision(app: &AppHandle, json: &str, expected_site_code: &str) -> Result<(), String> {
     if expected_site_code.trim().is_empty() { return Err("ต้องพิมพ์ Site Code เพื่อยืนยัน".into()); }
@@ -455,5 +453,42 @@ mod tests {
         let source=include_str!("packages.rs");
         assert!(!source.contains("SELECT public_key_b64 FROM trusted_package_keys"));
         assert!(!source.contains("INSERT INTO trusted_package_keys"));
+    }
+
+    #[cfg(feature="unit")]
+    fn unit_db()->rusqlite::Connection{
+        let mut c=rusqlite::Connection::open_in_memory().unwrap();
+        for sql in [
+            include_str!("../../database/migrations/0001_security.sql"),
+            include_str!("../../database/migrations/0002_hr_domain.sql"),
+            include_str!("../../database/migrations/0003_offline_distribution.sql"),
+            include_str!("../../database/migrations/0004_package_signing.sql"),
+            include_str!("../../database/migrations/0005_scope_constraints.sql"),
+            include_str!("../../database/migrations/0006_central_signing_keys.sql"),
+        ]{c.execute_batch(sql).unwrap();}
+        c
+    }
+    #[cfg(feature="unit")]
+    #[test] fn import_signed_happy_path_persists_unit_identity_and_argon2_login_material(){
+        use argon2::PasswordVerifier;
+        let json=signed(&manifest());let (_,p)=decode_verified(&json,Some("SITE-A"),Utc::now()).unwrap();let mut c=unit_db();
+        import_verified_manifest(&mut c,&p).unwrap();
+        let edition:String=c.query_row("SELECT edition FROM app_identity WHERE singleton_id=1",[],|r|r.get(0)).unwrap();assert_eq!(edition,"UNIT");
+        let stored:String=c.query_row("SELECT password_hash FROM users WHERE username='user-a'",[],|r|r.get(0)).unwrap();
+        let parsed=PasswordHash::new(&stored).unwrap();assert!(Argon2::default().verify_password(b"alpha-test-password",&parsed).is_ok());
+    }
+    #[cfg(feature="unit")]
+    #[test] fn duplicate_package_is_rejected(){
+        let json=signed(&manifest());let (_,p)=decode_verified(&json,Some("SITE-A"),Utc::now()).unwrap();let mut c=unit_db();
+        import_verified_manifest(&mut c,&p).unwrap();assert!(import_verified_manifest(&mut c,&p).is_err());
+        let n:i64=c.query_row("SELECT COUNT(*) FROM package_imports",[],|r|r.get(0)).unwrap();assert_eq!(n,1);
+    }
+    #[cfg(feature="unit")]
+    #[test] fn duplicate_username_rolls_back_identity(){
+        let mut p=manifest();p.users[0].username="collision".into();let json=signed(&p);let (_,p)=decode_verified(&json,Some("SITE-A"),Utc::now()).unwrap();let mut c=unit_db();
+        c.execute("INSERT INTO users(id,username,password_hash,display_name,is_active,created_at,updated_at) VALUES('existing','collision',?1,'Existing',1,'now','now')",[hash()]).unwrap();
+        assert!(import_verified_manifest(&mut c,&p).is_err());
+        let identities:i64=c.query_row("SELECT COUNT(*) FROM app_identity",[],|r|r.get(0)).unwrap();assert_eq!(identities,0);
+        let imports:i64=c.query_row("SELECT COUNT(*) FROM package_imports",[],|r|r.get(0)).unwrap();assert_eq!(imports,0);
     }
 }
