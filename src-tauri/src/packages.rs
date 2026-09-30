@@ -273,7 +273,9 @@ pub fn export_provision(app: &AppHandle, user_id: &str, target_site_code: &str, 
         validate_hash(&password_hash)?;
         let roles: Vec<String> = {
             let mut s = c.prepare("SELECT r.code FROM roles r JOIN user_roles ur ON ur.role_id=r.id WHERE ur.user_id=?1 ORDER BY r.code").map_err(|e| e.to_string())?;
-            s.query_map([&uid], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?.filter_map(Result::ok).collect()
+            let rows = s.query_map([&uid], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+            let values: Vec<String> = rows.filter_map(Result::ok).collect();
+            values
         };
         if roles.len() != 1 || !ALLOWED_ROLES.contains(&roles[0].as_str()) {
             return Err("ผู้ใช้ที่จะส่งไป Unit ต้องมี Role ที่อนุญาตเพียง 1 Role และห้าม SYSTEM_ADMIN".into());
@@ -281,14 +283,18 @@ pub fn export_provision(app: &AppHandle, user_id: &str, target_site_code: &str, 
         let role_code = roles[0].clone();
         let permissions: Vec<String> = {
             let mut s = c.prepare("SELECT p.code FROM permissions p JOIN role_permissions rp ON rp.permission_id=p.id JOIN roles r ON r.id=rp.role_id WHERE r.code=?1 ORDER BY p.code").map_err(|e| e.to_string())?;
-            s.query_map([&role_code], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?.filter_map(Result::ok).collect()
+            let rows = s.query_map([&role_code], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+            let values: Vec<String> = rows.filter_map(Result::ok).collect();
+            values
         };
         if permissions.iter().any(|x| !ALLOWED_PERMISSIONS.contains(&x.as_str())) {
             return Err("Role มี Permission ที่ Unit allowlist ไม่อนุญาต".into());
         }
         let scopes: Vec<ProvisionScope> = {
             let mut s = c.prepare("SELECT scope_type,company_id,department_id FROM user_data_scopes WHERE user_id=?1 ORDER BY scope_type,company_id,department_id").map_err(|e| e.to_string())?;
-            s.query_map([&uid], |r| Ok(ProvisionScope { scope_type: r.get(0)?, company_id: r.get(1)?, department_id: r.get(2)? })).map_err(|e| e.to_string())?.filter_map(Result::ok).collect()
+            let rows = s.query_map([&uid], |r| Ok(ProvisionScope { scope_type: r.get(0)?, company_id: r.get(1)?, department_id: r.get(2)? })).map_err(|e| e.to_string())?;
+            let values: Vec<ProvisionScope> = rows.filter_map(Result::ok).collect();
+            values
         };
         if scopes.is_empty() { return Err("ผู้ใช้ที่จะส่งไป Unit ต้องมี Data Scope".into()); }
         for s in &scopes { validate_scope(s)?; }
