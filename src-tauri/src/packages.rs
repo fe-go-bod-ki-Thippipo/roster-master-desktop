@@ -342,12 +342,8 @@ pub fn inspect_provision(json: &str) -> Result<ProvisionInspection, String> {
 }
 
 #[cfg(feature = "unit")]
-pub fn import_provision(app: &AppHandle, json: &str, expected_site_code: &str) -> Result<(), String> {
-    if expected_site_code.trim().is_empty() { return Err("ต้องพิมพ์ Site Code เพื่อยืนยัน".into()); }
-    if edition::identity(app)?.is_some() { return Err("เครื่องนี้ถูก Provision แล้ว".into()); }
-    let (_envelope, p) = decode_verified(json, Some(expected_site_code), Utc::now())?;
-    let c = db::open(app)?;
-    let tx = c.unchecked_transaction().map_err(|e| e.to_string())?;
+fn import_verified_manifest(conn: &mut rusqlite::Connection, p: &ProvisionManifest) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     let already: i64 = tx.query_row("SELECT EXISTS(SELECT 1 FROM package_imports WHERE package_id=?1)", [&p.package_id], |r| r.get(0)).map_err(|e| e.to_string())?;
     if already == 1 { return Err("Package นี้เคยถูกนำเข้าแล้ว".into()); }
     let now = Utc::now().to_rfc3339();
@@ -372,6 +368,17 @@ pub fn import_provision(app: &AppHandle, json: &str, expected_site_code: &str) -
     tx.execute("INSERT INTO package_imports(id,package_id,source_site_code,target_site_code,package_type,manifest_json,imported_at) VALUES(?1,?2,?3,?4,'PROVISION',?5,?6)", params![Uuid::new_v4().to_string(), p.package_id, p.source_site_code, p.target_site_code, stored, now]).map_err(|e| e.to_string())?;
     tx.execute("INSERT INTO audit_logs(id,user_id,action,entity_type,entity_id,after_json,occurred_at) VALUES(?1,NULL,'IMPORT','PROVISION_PACKAGE',?2,?3,?4)", params![Uuid::new_v4().to_string(), p.package_id, format!(r#"{{"source_site_code":"{}","target_site_code":"{}","users":{}}}"#, p.source_site_code, p.target_site_code, p.users.len()), now]).map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())
+}
+
+}
+
+#[cfg(feature = "unit")]
+pub fn import_provision(app: &AppHandle, json: &str, expected_site_code: &str) -> Result<(), String> {
+    if expected_site_code.trim().is_empty() { return Err("ต้องพิมพ์ Site Code เพื่อยืนยัน".into()); }
+    if edition::identity(app)?.is_some() { return Err("เครื่องนี้ถูก Provision แล้ว".into()); }
+    let (_envelope, p) = decode_verified(json, Some(expected_site_code), Utc::now())?;
+    let mut conn = db::open(app)?;
+    import_verified_manifest(&mut conn, &p)
 }
 
 #[cfg(test)]
